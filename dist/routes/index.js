@@ -1,0 +1,26 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const clientes_routes_1 = __importDefault(require("./clientes.routes"));
+const categorias_routes_1 = __importDefault(require("./categorias.routes"));
+const subcategorias_routes_1 = __importDefault(require("./subcategorias.routes"));
+const productos_routes_1 = __importDefault(require("./productos.routes"));
+const proveedores_routes_1 = __importDefault(require("./proveedores.routes"));
+const almacenes_routes_1 = __importDefault(require("./almacenes.routes"));
+const ventas_routes_1 = __importDefault(require("./ventas.routes"));
+const auth_routes_1 = __importDefault(require("./auth.routes"));
+const usuarios_routes_1 = __importDefault(require("./usuarios.routes"));
+const router = (0, express_1.Router)();
+router.use('/auth', auth_routes_1.default);
+router.use('/usuarios', usuarios_routes_1.default);
+router.use('/clientes', clientes_routes_1.default);
+router.use('/categorias', categorias_routes_1.default);
+router.use('/subcategorias', subcategorias_routes_1.default);
+router.use('/productos', productos_routes_1.default);
+router.use('/proveedores', proveedores_routes_1.default);
+router.use('/almacenes', almacenes_routes_1.default);
+router.use('/ventas', ventas_routes_1.default);
+exports.default = router;
