@@ -6,6 +6,7 @@ import productosRouter from './productos.routes';
 import proveedoresRouter from './proveedores.routes';
 import almacenesRouter from './almacenes.routes';
 import ventasRouter from './ventas.routes';
+import estadisticasRouter from './estadisticas.routes';
 import authRouter from './auth.routes';
 import usuariosRouter from './usuarios.routes';
 
@@ -20,6 +21,7 @@ router.use('/productos', productosRouter);
 router.use('/proveedores', proveedoresRouter);
 router.use('/almacenes', almacenesRouter);
 router.use('/ventas', ventasRouter);
+router.use('/estadisticas', estadisticasRouter);
 
 export default router;
 
