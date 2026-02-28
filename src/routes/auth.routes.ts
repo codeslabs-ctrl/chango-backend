@@ -17,4 +17,13 @@ router.post('/login', async (req, res) => {
   res.json({ success: true, ...result });
 });
 
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ success: false, message: 'El correo es requerido' });
+  }
+  await authService.requestPasswordReset(email);
+  res.json({ success: true, message: 'Si el correo está registrado, recibirás una clave temporal por correo.' });
+});
+
 export default router;

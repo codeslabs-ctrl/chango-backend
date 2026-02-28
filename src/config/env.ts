@@ -17,3 +17,14 @@ export const JWT_CONFIG = {
   expiresIn: process.env.JWT_EXPIRES_IN || '1h'
 };
 
+export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4200';
+
+export const SMTP_CONFIG = {
+  service: process.env.EMAIL_SERVICE || '',
+  host: process.env.EMAIL_HOST || process.env.SMTP_HOST || '',
+  port: process.env.EMAIL_PORT ? Number(process.env.EMAIL_PORT) : (process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587),
+  secure: process.env.EMAIL_SECURE === 'true' || process.env.SMTP_SECURE === 'true',
+  user: process.env.EMAIL_USER || process.env.SMTP_USER || '',
+  pass: process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || ''
+};
+

@@ -135,7 +135,7 @@ export async function changePassword(userId: number, currentPassword: string, ne
 
   const hash = await hashPassword(newPassword);
   await query(
-    `UPDATE public.usuarios SET password_hash = $1, fecha_actualizacion = now() WHERE id = $2`,
+    `UPDATE public.usuarios SET password_hash = $1, first_login = false, fecha_actualizacion = now() WHERE id = $2`,
     [hash, userId]
   );
 }
