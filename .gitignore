@@ -1,0 +1,14 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno (nunca subir credenciales)
+.env
+.env.local
+.env.*.local
+
+# Output
+dist/
+build/
+
+# Logs
+*.log
