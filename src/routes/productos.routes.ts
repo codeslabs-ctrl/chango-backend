@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import * as productosService from '../services/productos.service';
-import { AppError } from '../utils/errors';
+import { AppError, NotFoundError } from '../utils/errors';
 
 const router = Router();
 
@@ -102,6 +102,35 @@ router.put('/:id', async (req, res) => {
     estatus: estatus === 'C' ? 'C' : estatus === 'A' ? 'A' : undefined
   });
   res.json({ success: true, data: producto });
+});
+
+router.post('/:id/stock', async (req, res) => {
+  const id = Number(req.params.id);
+  const { almacenes, precio_venta_sugerido } = req.body;
+  if (!Array.isArray(almacenes)) {
+    return res.status(400).json({ success: false, message: 'almacenes debe ser un array' });
+  }
+  const parsed = almacenes
+    .filter((a: unknown) => a && typeof a === 'object' && 'almacen_id' in a && 'cantidad_a_sumar' in a)
+    .map((a: { almacen_id: unknown; cantidad_a_sumar: unknown }) => ({
+      almacen_id: Number((a as { almacen_id: unknown }).almacen_id),
+      cantidad_a_sumar: Math.max(0, Number((a as { cantidad_a_sumar: unknown }).cantidad_a_sumar) || 0)
+    }))
+    .filter(a => !isNaN(a.almacen_id) && a.cantidad_a_sumar > 0);
+  if (parsed.length === 0 && precio_venta_sugerido === undefined) {
+    return res.status(400).json({ success: false, message: 'Debe indicar al menos un almacén con cantidad a sumar o un precio' });
+  }
+  try {
+    const producto = await productosService.addStockProducto(id, {
+      almacenes: parsed,
+      precio_venta_sugerido: typeof precio_venta_sugerido === 'number' ? precio_venta_sugerido : undefined
+    });
+    res.json({ success: true, data: producto });
+  } catch (err) {
+    if (err instanceof AppError) return res.status(err.status).json({ success: false, message: err.message });
+    if (err instanceof NotFoundError) return res.status(404).json({ success: false, message: err.message });
+    throw err;
+  }
 });
 
 router.patch('/:id/estatus', async (req, res) => {

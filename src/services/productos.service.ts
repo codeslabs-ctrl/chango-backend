@@ -273,6 +273,87 @@ export async function updateProductoEstatus(id: number, estatus: 'A' | 'C'): Pro
   return rows[0];
 }
 
+export interface AddStockDto {
+  almacen_id: number;
+  cantidad_a_sumar: number;
+}
+
+export async function addStockProducto(
+  productoId: number,
+  dto: { almacenes: AddStockDto[]; precio_venta_sugerido?: number }
+): Promise<Producto> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    if (dto.precio_venta_sugerido !== undefined) {
+      await client.query(
+        `UPDATE public.productos SET precio_venta_sugerido = $1 WHERE producto_id = $2`,
+        [dto.precio_venta_sugerido, productoId]
+      );
+    }
+
+    for (const item of dto.almacenes || []) {
+      const { almacen_id, cantidad_a_sumar } = item;
+      if (cantidad_a_sumar <= 0) continue;
+
+      const selectRes = await client.query<{ stock_actual: number }>(
+        `SELECT stock_actual FROM public.producto_almacenes
+         WHERE producto_id = $1 AND almacen_id = $2`,
+        [productoId, almacen_id]
+      );
+
+      if (selectRes.rows[0]) {
+        const actual = Number(selectRes.rows[0].stock_actual) || 0;
+        const nuevoStock = actual + cantidad_a_sumar;
+        await client.query(
+          `UPDATE public.producto_almacenes SET stock_actual = $1
+           WHERE producto_id = $2 AND almacen_id = $3`,
+          [nuevoStock, productoId, almacen_id]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO public.producto_almacenes (producto_id, almacen_id, stock_actual, stock_minimo, punto_reorden)
+           VALUES ($1, $2, $3, 0, 0)`,
+          [productoId, almacen_id, cantidad_a_sumar]
+        );
+      }
+    }
+
+    const sumRes = await client.query<{ total: string }>(
+      `SELECT COALESCE(SUM(stock_actual), 0)::numeric as total
+       FROM public.producto_almacenes WHERE producto_id = $1`,
+      [productoId]
+    );
+    const existenciaTotal = Number(sumRes.rows[0]?.total ?? 0) || 0;
+    await client.query(
+      `UPDATE public.productos SET existencia_actual = $1, fecha_ultimo_inventario = now() WHERE producto_id = $2`,
+      [existenciaTotal, productoId]
+    );
+
+    const selectRes = await client.query<Producto>(
+      `SELECT p.producto_id, p.codigo_interno, p.descripcion, p.nombre, p.subcategoria_id,
+              s.nombre as subcategoria_nombre, p.proveedor_id, pr.nombre_empresa as proveedor_nombre,
+              p.existencia_actual, p.unidad_medida, p.precio_venta_sugerido,
+              p.fecha_ultimo_inventario, COALESCE(p.estatus, 'A') as estatus
+       FROM public.productos p
+       LEFT JOIN public.subcategorias s ON s.subcategoria_id = p.subcategoria_id
+       LEFT JOIN public.proveedores pr ON pr.proveedor_id = p.proveedor_id
+       WHERE p.producto_id = $1`,
+      [productoId]
+    );
+    const rows = selectRes.rows;
+    await client.query('COMMIT');
+    if (!rows[0]) throw new NotFoundError('Producto');
+    return rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function deleteProducto(id: number): Promise<void> {
   const checkRes = await query(
     `SELECT 1 FROM public.ventas_detalle WHERE producto_id = $1 LIMIT 1`,
