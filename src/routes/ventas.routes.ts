@@ -25,6 +25,11 @@ router.patch('/:id/eliminar', async (req, res) => {
 router.post('/', async (req, res) => {
   const { cliente_id, metodo_pago, detalles, confirmar } = req.body;
 
+  if (cliente_id == null || cliente_id === '') {
+    return res
+      .status(400)
+      .json({ success: false, message: 'El cliente es obligatorio' });
+  }
   if (!detalles || !Array.isArray(detalles) || detalles.length === 0) {
     return res
       .status(400)

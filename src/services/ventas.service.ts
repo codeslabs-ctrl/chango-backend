@@ -247,6 +247,22 @@ export async function confirmarVenta(id: number): Promise<VentaConDetalles | nul
       }
     } else {
       for (const d of data.detalles) {
+        const almacenes = await productosService.getProductoAlmacenes(d.producto_id);
+        let remaining = Number(d.cantidad) || 0;
+        for (const a of almacenes) {
+          if (remaining <= 0) break;
+          const stock = a.stock_actual ?? 0;
+          const toReduce = Math.min(remaining, stock);
+          if (toReduce > 0) {
+            await client.query(
+              `UPDATE public.producto_almacenes
+               SET stock_actual = COALESCE(stock_actual, 0) - $1
+               WHERE producto_id = $2 AND almacen_id = $3`,
+              [toReduce, d.producto_id, a.almacen_id]
+            );
+            remaining -= toReduce;
+          }
+        }
         await client.query(
           `UPDATE public.productos
            SET existencia_actual = COALESCE(existencia_actual, 0) - $1
