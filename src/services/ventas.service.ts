@@ -9,8 +9,15 @@ import type {
 import { AppError, NotFoundError } from '../utils/errors';
 import * as productosService from './productos.service';
 
+/** Solo ventas con este usuario asignado (vendedor); exige coincidencia exacta, sin acceso a ventas sin asignar. */
+export function vendedorPuedeAccederVenta(venta: Venta, userId: number): boolean {
+  return venta.usuario_id != null && venta.usuario_id === userId;
+}
+
 export async function crearVenta(
-  dto: CreateVentaDto
+  dto: CreateVentaDto,
+  /** Solo se guarda cuando el creador es vendedor (lo setea la ruta con el id del JWT). */
+  usuarioIdVendedor?: number | null
 ): Promise<{ venta: Venta; detalles: CreateVentaDetalleDto[] }> {
   const { cliente_id, metodo_pago, detalles, confirmar = false } = dto;
 
@@ -75,11 +82,13 @@ export async function crearVenta(
       0
     );
 
+    const uid = usuarioIdVendedor != null && usuarioIdVendedor > 0 ? usuarioIdVendedor : null;
+
     const ventaRes = await client.query<Venta>(
-      `INSERT INTO public.ventas (cliente_id, total_venta, metodo_pago, estatus)
-       VALUES ($1, $2, $3, $4)
-       RETURNING venta_id, cliente_id, fecha_venta, total_venta, metodo_pago, estatus`,
-      [cliente_id ?? null, totalVenta, metodo_pago || null, estatus]
+      `INSERT INTO public.ventas (cliente_id, total_venta, metodo_pago, estatus, usuario_id)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING venta_id, cliente_id, usuario_id, fecha_venta, total_venta, metodo_pago, estatus`,
+      [cliente_id ?? null, totalVenta, metodo_pago || null, estatus, uid]
     );
 
     const venta = ventaRes.rows[0];
@@ -138,12 +147,15 @@ export async function findVentaById(id: number): Promise<VentaConDetalles | null
             c.nombre as cliente_nombre,
             c.cedula_rif as cliente_cedula_rif,
             c.telefono as cliente_telefono,
+            v.usuario_id,
+            u.nombre_usuario as usuario_nombre,
             v.fecha_venta,
             v.total_venta,
             v.metodo_pago,
             v.estatus
      FROM public.ventas v
      LEFT JOIN public.clientes c ON c.cliente_id = v.cliente_id
+     LEFT JOIN public.usuarios u ON u.id = v.usuario_id
      WHERE v.venta_id = $1`,
     [id]
   );
@@ -175,6 +187,8 @@ export interface VentasFilters {
   fechaHasta?: string;
   /** Texto libre: cliente, teléfono, cédula, método de pago, productos, o ID de venta */
   busqueda?: string;
+  /** Si viene informado, solo ventas de ese usuario (uso interno: vendedor autenticado). */
+  usuarioId?: number;
 }
 
 export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
@@ -184,6 +198,10 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
   if (filters?.clienteId) {
     params.push(filters.clienteId);
     conditions.push(`v.cliente_id = $${params.length}`);
+  }
+  if (filters?.usuarioId != null && filters.usuarioId > 0) {
+    params.push(filters.usuarioId);
+    conditions.push(`v.usuario_id = $${params.length}`);
   }
   if (filters?.estatus) {
     if (filters.estatus === 'POR CONFIRMAR') {
@@ -240,12 +258,15 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
              FROM public.ventas_detalle vd
              JOIN public.productos p ON p.producto_id = vd.producto_id
              WHERE vd.venta_id = v.venta_id) as productos_nombres,
+            v.usuario_id,
+            u.nombre_usuario as usuario_nombre,
             v.fecha_venta,
             v.total_venta,
             v.metodo_pago,
             v.estatus
      FROM public.ventas v
      LEFT JOIN public.clientes c ON c.cliente_id = v.cliente_id
+     LEFT JOIN public.usuarios u ON u.id = v.usuario_id
      ${where}
      ORDER BY v.fecha_venta DESC`,
     params

@@ -11,3 +11,14 @@ export function requireNotVendedor(req: AuthRequest, res: Response, next: NextFu
   }
   next();
 }
+
+/** Solo rol vendedor (p. ej. estadísticas propias). */
+export function requireVendedor(req: AuthRequest, res: Response, next: NextFunction) {
+  if (req.user?.rol !== 'vendedor') {
+    return res.status(403).json({
+      success: false,
+      message: 'Esta acción está reservada para usuarios con rol vendedor.'
+    });
+  }
+  next();
+}

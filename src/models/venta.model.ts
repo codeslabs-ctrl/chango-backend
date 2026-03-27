@@ -5,6 +5,9 @@ export interface Venta {
   cliente_cedula_rif?: string | null;
   cliente_telefono?: string | null;
   productos_nombres?: string | null;
+  /** Usuario (p. ej. vendedor) asociado; null en ventas antiguas o creadas por no vendedor */
+  usuario_id?: number | null;
+  usuario_nombre?: string | null;
   fecha_venta: Date;
   total_venta: number;
   metodo_pago: string | null;
