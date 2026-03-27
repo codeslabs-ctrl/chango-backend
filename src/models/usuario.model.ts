@@ -4,6 +4,7 @@ export interface Usuario {
   id: number;
   username: string;
   email: string;
+  nombre_usuario?: string | null;
   rol: RolUsuario;
   activo: boolean;
   ultimo_login?: Date | null;
@@ -20,11 +21,13 @@ export interface CreateUsuarioDto {
   email: string;
   password: string;
   rol?: RolUsuario;
+  nombre_usuario?: string | null;
 }
 
 export interface UpdateUsuarioDto {
   username?: string;
   email?: string;
+  nombre_usuario?: string | null;
   password?: string;
   rol?: RolUsuario;
   activo?: boolean;
@@ -37,5 +40,5 @@ export interface LoginDto {
 
 export interface LoginResponse {
   token: string;
-  user: { id: number; username: string; email: string; rol: RolUsuario };
+  user: { id: number; username: string; email: string; nombre_usuario?: string | null; rol: RolUsuario };
 }

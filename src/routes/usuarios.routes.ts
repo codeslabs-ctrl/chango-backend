@@ -51,7 +51,7 @@ router.get('/', authenticateJWT, requireAdmin, async (_req, res) => {
 });
 
 router.post('/', authenticateJWT, requireAdmin, async (req, res) => {
-  const { username, email, password, rol } = req.body;
+  const { username, email, password, rol, nombre_usuario } = req.body;
 
   if (!username || !email || !password) {
     return res.status(400).json({
@@ -60,7 +60,7 @@ router.post('/', authenticateJWT, requireAdmin, async (req, res) => {
     });
   }
 
-  const usuario = await usuariosService.createUsuario({ username, email, password, rol });
+  const usuario = await usuariosService.createUsuario({ username, email, password, rol, nombre_usuario });
   res.status(201).json({ success: true, data: usuario });
 });
 
@@ -75,11 +75,19 @@ router.get('/:id', authenticateJWT, requireAdmin, async (req, res) => {
 
 router.put('/:id', authenticateJWT, requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const { username, email, password, rol, activo } = req.body;
+  const { username, email, password, rol, activo, nombre_usuario } = req.body;
 
-  const dto: { username?: string; email?: string; password?: string; rol?: 'administrador' | 'usuario'; activo?: boolean } = {};
+  const dto: {
+    username?: string;
+    email?: string;
+    nombre_usuario?: string | null;
+    password?: string;
+    rol?: 'administrador' | 'usuario' | 'vendedor';
+    activo?: boolean;
+  } = {};
   if (username !== undefined) dto.username = username;
   if (email !== undefined) dto.email = email;
+  if (nombre_usuario !== undefined) dto.nombre_usuario = nombre_usuario;
   if (password !== undefined) dto.password = password;
   if (rol === 'administrador' || rol === 'usuario' || rol === 'vendedor') dto.rol = rol;
   if (typeof activo === 'boolean') dto.activo = activo;

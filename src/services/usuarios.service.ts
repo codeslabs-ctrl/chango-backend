@@ -11,7 +11,7 @@ function validRol(rol: unknown): rol is RolUsuario {
 
 export async function findAllUsuarios(): Promise<Usuario[]> {
   const { rows } = await query<Usuario>(
-    `SELECT id, username, email, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion
+    `SELECT id, username, email, nombre_usuario, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion
      FROM public.usuarios
      ORDER BY id DESC`
   );
@@ -20,7 +20,7 @@ export async function findAllUsuarios(): Promise<Usuario[]> {
 
 export async function getUsuarioById(id: number): Promise<Usuario | null> {
   const { rows } = await query<Usuario>(
-    `SELECT id, username, email, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion
+    `SELECT id, username, email, nombre_usuario, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion
      FROM public.usuarios
      WHERE id = $1`,
     [id]
@@ -31,12 +31,16 @@ export async function getUsuarioById(id: number): Promise<Usuario | null> {
 export async function createUsuario(dto: CreateUsuarioDto): Promise<Usuario> {
   const passwordHash = await hashPassword(dto.password);
   const rol = validRol(dto.rol) ? dto.rol : 'usuario';
+  const nombreUsuario =
+    dto.nombre_usuario !== undefined && dto.nombre_usuario !== null && String(dto.nombre_usuario).trim() !== ''
+      ? String(dto.nombre_usuario).trim().slice(0, 200)
+      : String(dto.username).trim().slice(0, 200);
 
   const { rows } = await query<Usuario>(
-    `INSERT INTO public.usuarios (username, email, password_hash, rol)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, username, email, rol, activo, fecha_creacion`,
-    [dto.username, dto.email, passwordHash, rol]
+    `INSERT INTO public.usuarios (username, email, password_hash, rol, nombre_usuario)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, username, email, nombre_usuario, rol, activo, fecha_creacion`,
+    [dto.username, dto.email, passwordHash, rol, nombreUsuario]
   );
 
   return rows[0];
@@ -57,6 +61,14 @@ export async function updateUsuario(id: number, dto: UpdateUsuarioDto): Promise<
   if (dto.email !== undefined) {
     updates.push(`email = $${paramIndex++}`);
     values.push(dto.email);
+  }
+  if (dto.nombre_usuario !== undefined) {
+    const n =
+      dto.nombre_usuario === null || String(dto.nombre_usuario).trim() === ''
+        ? null
+        : String(dto.nombre_usuario).trim().slice(0, 200);
+    updates.push(`nombre_usuario = $${paramIndex++}`);
+    values.push(n);
   }
   if (dto.rol !== undefined && validRol(dto.rol)) {
     updates.push(`rol = $${paramIndex++}`);
@@ -81,7 +93,7 @@ export async function updateUsuario(id: number, dto: UpdateUsuarioDto): Promise<
 
   const { rows } = await query<Usuario>(
     `UPDATE public.usuarios SET ${setClause} WHERE id = ${idParam}
-     RETURNING id, username, email, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion`,
+     RETURNING id, username, email, nombre_usuario, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion`,
     values
   );
 
@@ -114,7 +126,7 @@ export async function updateMiPerfil(userId: number, dto: { username?: string; e
 
   const { rows } = await query<Usuario>(
     `UPDATE public.usuarios SET ${setClause} WHERE id = ${idParam}
-     RETURNING id, username, email, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion`,
+     RETURNING id, username, email, nombre_usuario, rol, activo, ultimo_login, fecha_creacion, fecha_actualizacion`,
     values
   );
   return rows[0];

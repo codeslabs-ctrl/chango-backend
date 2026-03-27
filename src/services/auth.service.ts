@@ -8,8 +8,8 @@ import type { LoginDto, LoginResponse } from '../models/usuario.model';
 import { AppError } from '../utils/errors';
 
 export async function login(dto: LoginDto): Promise<LoginResponse> {
-  const { rows } = await query<UsuarioConPassword & { first_login?: boolean }>(
-    `SELECT id, username, email, rol, password_hash, activo, first_login
+  const { rows } = await query<UsuarioConPassword & { first_login?: boolean; nombre_usuario?: string | null }>(
+    `SELECT id, username, email, nombre_usuario, rol, password_hash, activo, first_login
      FROM public.usuarios
      WHERE username = $1 OR email = $1`,
     [dto.usernameOrEmail]
@@ -50,6 +50,7 @@ export async function login(dto: LoginDto): Promise<LoginResponse> {
       id: user.id,
       username: user.username,
       email: user.email,
+      nombre_usuario: user.nombre_usuario ?? null,
       rol: user.rol || 'usuario'
     }
   };
