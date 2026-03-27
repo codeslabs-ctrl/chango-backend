@@ -10,11 +10,11 @@ const router = Router();
 router.post('/me/change-password', authenticateJWT, async (req, res) => {
   const userId = (req as AuthRequest).user?.id;
   if (!userId) {
-    return res.status(401).json({ success: false, message: 'No autenticado' });
+    return res.status(401).json({ success: false, message: 'Tenés que iniciar sesión para continuar.' });
   }
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) {
-    return res.status(400).json({ success: false, message: 'Contraseña actual y nueva son requeridas' });
+    return res.status(400).json({ success: false, message: 'Indicá la contraseña actual y la nueva.' });
   }
   await usuariosService.changePassword(userId, currentPassword, newPassword);
   res.json({ success: true, message: 'Contraseña actualizada' });
@@ -23,7 +23,7 @@ router.post('/me/change-password', authenticateJWT, async (req, res) => {
 router.get('/me', authenticateJWT, async (req, res) => {
   const userId = (req as AuthRequest).user?.id;
   if (!userId) {
-    return res.status(401).json({ success: false, message: 'No autenticado' });
+    return res.status(401).json({ success: false, message: 'Tenés que iniciar sesión para continuar.' });
   }
   const usuario = await usuariosService.getUsuarioById(userId);
   if (!usuario) {
@@ -35,7 +35,7 @@ router.get('/me', authenticateJWT, async (req, res) => {
 router.patch('/me', authenticateJWT, async (req, res) => {
   const userId = (req as AuthRequest).user?.id;
   if (!userId) {
-    return res.status(401).json({ success: false, message: 'No autenticado' });
+    return res.status(401).json({ success: false, message: 'Tenés que iniciar sesión para continuar.' });
   }
   const { username, email } = req.body;
   const dto: { username?: string; email?: string } = {};
@@ -56,7 +56,7 @@ router.post('/', authenticateJWT, requireAdmin, async (req, res) => {
   if (!username || !email || !password) {
     return res.status(400).json({
       success: false,
-      message: 'username, email y password son requeridos'
+      message: 'Completá nombre de usuario, correo electrónico y contraseña.'
     });
   }
 
@@ -81,7 +81,7 @@ router.put('/:id', authenticateJWT, requireAdmin, async (req, res) => {
   if (username !== undefined) dto.username = username;
   if (email !== undefined) dto.email = email;
   if (password !== undefined) dto.password = password;
-  if (rol === 'administrador' || rol === 'usuario') dto.rol = rol;
+  if (rol === 'administrador' || rol === 'usuario' || rol === 'vendedor') dto.rol = rol;
   if (typeof activo === 'boolean') dto.activo = activo;
 
   const usuario = await usuariosService.updateUsuario(id, dto);

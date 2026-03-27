@@ -53,7 +53,10 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   const filters = {
     clienteId: req.query.clienteId ? Number(req.query.clienteId) : undefined,
-    estatus: req.query.estatus as string | undefined
+    estatus: typeof req.query.estatus === 'string' ? req.query.estatus : undefined,
+    fechaDesde: typeof req.query.fechaDesde === 'string' ? req.query.fechaDesde : undefined,
+    fechaHasta: typeof req.query.fechaHasta === 'string' ? req.query.fechaHasta : undefined,
+    busqueda: typeof req.query.busqueda === 'string' ? req.query.busqueda : undefined
   };
   const data = await ventasService.findAllVentas(filters);
   res.json({ success: true, data });

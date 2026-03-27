@@ -15,17 +15,20 @@ export async function crearVenta(
   const { cliente_id, metodo_pago, detalles, confirmar = false } = dto;
 
   if (!detalles || !Array.isArray(detalles) || detalles.length === 0) {
-    throw new AppError('La venta debe tener al menos un detalle', 400);
+    throw new AppError('La venta debe tener al menos un producto en el detalle.', 400);
   }
 
   for (const d of detalles) {
     if (!d.despachos || !Array.isArray(d.despachos)) {
-      throw new AppError(`El producto ${d.producto_id} debe tener despachos por almacén`, 400);
+      throw new AppError(
+        'Indicá en qué almacén se entrega cada producto (cantidad por almacén).',
+        400
+      );
     }
     const sumaDespachos = d.despachos.reduce((s, x) => s + (Number(x.cantidad) || 0), 0);
     if (Math.abs(sumaDespachos - Number(d.cantidad)) > 0.001) {
       throw new AppError(
-        `La suma de despachos (${sumaDespachos}) debe ser igual a la cantidad (${d.cantidad}) para el producto ${d.producto_id}`,
+        `La suma de cantidades por almacén (${sumaDespachos}) debe coincidir con la cantidad total (${d.cantidad}).`,
         400
       );
     }
@@ -33,11 +36,11 @@ export async function crearVenta(
 
   for (const d of detalles) {
     const producto = await productosService.findProductoById(d.producto_id);
-    if (!producto) throw new AppError(`Producto ${d.producto_id} no encontrado`, 404);
+    if (!producto) throw new AppError('No encontramos uno de los productos de la venta.', 404);
     const existencia = Number(producto.existencia_actual) || 0;
     if (existencia < Number(d.cantidad)) {
       throw new AppError(
-        `Stock insuficiente para ${producto.descripcion}: existencia actual ${existencia}, solicitado ${d.cantidad}`,
+        `No hay stock suficiente para «${producto.descripcion}». Disponible: ${existencia}, pedido: ${d.cantidad}.`,
         400
       );
     }
@@ -54,7 +57,7 @@ export async function crearVenta(
       const stock = pa?.stock_actual ?? 0;
       if (stock < desp.cantidad) {
         throw new AppError(
-          `Stock insuficiente en almacén para ${producto.descripcion}: almacén ${pa?.almacen_nombre || desp.almacen_id} tiene ${stock}, solicitado ${desp.cantidad}`,
+          `En el almacén «${pa?.almacen_nombre || String(desp.almacen_id)}» no hay stock suficiente para «${producto.descripcion}». Disponible: ${stock}, pedido: ${desp.cantidad}.`,
           400
         );
       }
@@ -166,6 +169,12 @@ export async function findVentaById(id: number): Promise<VentaConDetalles | null
 export interface VentasFilters {
   clienteId?: number;
   estatus?: string;
+  /** YYYY-MM-DD inclusive */
+  fechaDesde?: string;
+  /** YYYY-MM-DD inclusive */
+  fechaHasta?: string;
+  /** Texto libre: cliente, teléfono, cédula, método de pago, productos, o ID de venta */
+  busqueda?: string;
 }
 
 export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
@@ -183,6 +192,41 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
       params.push(filters.estatus);
       conditions.push(`v.estatus = $${params.length}`);
     }
+  }
+
+  if (filters?.fechaDesde && /^\d{4}-\d{2}-\d{2}$/.test(filters.fechaDesde)) {
+    params.push(filters.fechaDesde);
+    conditions.push(`v.fecha_venta::date >= $${params.length}::date`);
+  }
+  if (filters?.fechaHasta && /^\d{4}-\d{2}-\d{2}$/.test(filters.fechaHasta)) {
+    params.push(filters.fechaHasta);
+    conditions.push(`v.fecha_venta::date <= $${params.length}::date`);
+  }
+
+  const qRaw = filters?.busqueda?.trim();
+  if (qRaw) {
+    const term = `%${qRaw}%`;
+    params.push(term);
+    const likeIdx = params.length;
+    const orParts: string[] = [
+      `c.nombre ILIKE $${likeIdx}`,
+      `COALESCE(c.telefono, '') ILIKE $${likeIdx}`,
+      `COALESCE(c.cedula_rif, '') ILIKE $${likeIdx}`,
+      `COALESCE(v.metodo_pago, '') ILIKE $${likeIdx}`,
+      `EXISTS (
+         SELECT 1 FROM public.ventas_detalle vd
+         JOIN public.productos p ON p.producto_id = vd.producto_id
+         WHERE vd.venta_id = v.venta_id AND p.descripcion ILIKE $${likeIdx}
+       )`
+    ];
+    if (/^\d+$/.test(qRaw)) {
+      const idNum = parseInt(qRaw, 10);
+      if (!Number.isNaN(idNum)) {
+        params.push(idNum);
+        orParts.push(`v.venta_id = $${params.length}`);
+      }
+    }
+    conditions.push(`(${orParts.join(' OR ')})`);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';

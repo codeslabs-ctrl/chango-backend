@@ -19,6 +19,16 @@ export async function findAllAlmacenes(): Promise<Almacen[]> {
   return rows;
 }
 
+/** Solo almacenes activos (estatus A), para elegir origen de la venta. */
+export async function findAlmacenesActivosParaVenta(): Promise<{ almacen_id: number; nombre: string }[]> {
+  const { rows } = await query<{ almacen_id: number; nombre: string }>(
+    `SELECT almacen_id, nombre FROM public.almacenes
+     WHERE COALESCE(estatus, 'A') = 'A'
+     ORDER BY nombre`
+  );
+  return rows;
+}
+
 export async function createAlmacen(dto: CreateAlmacenDto): Promise<Almacen> {
   const { rows } = await query<Almacen>(
     `INSERT INTO public.almacenes (nombre, ubicacion, estatus)

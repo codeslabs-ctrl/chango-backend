@@ -3,7 +3,7 @@ import { hashPassword, comparePassword } from '../utils/password';
 import type { Usuario, CreateUsuarioDto, UpdateUsuarioDto, RolUsuario } from '../models/usuario.model';
 import { NotFoundError, AppError } from '../utils/errors';
 
-const ROLES: RolUsuario[] = ['administrador', 'usuario'];
+const ROLES: RolUsuario[] = ['administrador', 'usuario', 'vendedor'];
 
 function validRol(rol: unknown): rol is RolUsuario {
   return typeof rol === 'string' && ROLES.includes(rol as RolUsuario);

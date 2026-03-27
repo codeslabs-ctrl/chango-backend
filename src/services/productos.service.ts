@@ -116,6 +116,7 @@ export async function getProductoAlmacenes(productoId: number): Promise<Producto
      FROM public.producto_almacenes pa
      JOIN public.almacenes a ON a.almacen_id = pa.almacen_id
      WHERE pa.producto_id = $1
+       AND COALESCE(a.estatus, 'A') = 'A'
      ORDER BY a.nombre`,
     [productoId]
   );

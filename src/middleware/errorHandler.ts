@@ -1,15 +1,12 @@
 import { NextFunction, Request, Response } from 'express';
+import { mapErrorForClient } from '../utils/mapErrorForClient';
 
-// Error middleware centralizado
-export function errorHandler(err: any, _req: Request, res: Response, _next: NextFunction) {
+export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
   console.error(err);
 
-  const status = err.status || 500;
-  const message = err.message || 'Error interno del servidor';
-
+  const { status, message } = mapErrorForClient(err);
   res.status(status).json({
     success: false,
     message
   });
 }
-

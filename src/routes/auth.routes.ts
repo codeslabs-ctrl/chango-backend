@@ -9,7 +9,7 @@ router.post('/login', async (req, res) => {
   if (!usernameOrEmail || !password) {
     return res.status(400).json({
       success: false,
-      message: 'usernameOrEmail y password son requeridos'
+      message: 'Ingresá usuario o correo electrónico y contraseña.'
     });
   }
 
@@ -20,7 +20,7 @@ router.post('/login', async (req, res) => {
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
   if (!email || typeof email !== 'string') {
-    return res.status(400).json({ success: false, message: 'El correo es requerido' });
+    return res.status(400).json({ success: false, message: 'Indicá el correo electrónico.' });
   }
   await authService.requestPasswordReset(email);
   res.json({ success: true, message: 'Si el correo está registrado, recibirás una clave temporal por correo.' });

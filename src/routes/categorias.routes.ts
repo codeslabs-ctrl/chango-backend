@@ -1,14 +1,16 @@
 import { Router } from 'express';
 import * as categoriasService from '../services/categorias.service';
+import { authenticateJWT } from '../middleware/auth';
+import { requireNotVendedor } from '../middleware/vendedorAuth';
 
 const router = Router();
 
-router.get('/', async (_req, res) => {
+router.get('/', authenticateJWT, requireNotVendedor, async (_req, res) => {
   const data = await categoriasService.findAllCategorias();
   res.json({ success: true, data });
 });
 
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
   const { nombre } = req.body;
 
   if (!nombre) {
@@ -19,7 +21,7 @@ router.post('/', async (req, res) => {
   res.status(201).json({ success: true, data: categoria });
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   const { nombre } = req.body;
 
@@ -27,7 +29,7 @@ router.put('/:id', async (req, res) => {
   res.json({ success: true, data: categoria });
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   await categoriasService.deleteCategoria(id);
   res.status(204).send();

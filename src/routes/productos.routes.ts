@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import * as productosService from '../services/productos.service';
 import { AppError, NotFoundError } from '../utils/errors';
+import { authenticateJWT } from '../middleware/auth';
+import { requireNotVendedor } from '../middleware/vendedorAuth';
 
 const router = Router();
 
@@ -42,7 +44,7 @@ router.get('/:id', async (req, res) => {
   res.json({ success: true, data: { ...producto, almacenes } });
 });
 
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
   const {
     codigo_interno,
     descripcion,
@@ -58,7 +60,7 @@ router.post('/', async (req, res) => {
   if (!codigo_interno || !descripcion) {
     return res
       .status(400)
-      .json({ success: false, message: 'codigo_interno y descripcion son obligatorios' });
+      .json({ success: false, message: 'El código interno y la descripción son obligatorios.' });
   }
 
   const producto = await productosService.createProducto({
@@ -75,7 +77,7 @@ router.post('/', async (req, res) => {
   res.status(201).json({ success: true, data: producto });
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   const {
     codigo_interno,
@@ -104,7 +106,7 @@ router.put('/:id', async (req, res) => {
   res.json({ success: true, data: producto });
 });
 
-router.post('/:id/stock', async (req, res) => {
+router.post('/:id/stock', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   const { almacenes, precio_venta_sugerido } = req.body;
   if (!Array.isArray(almacenes)) {
@@ -133,17 +135,17 @@ router.post('/:id/stock', async (req, res) => {
   }
 });
 
-router.patch('/:id/estatus', async (req, res) => {
+router.patch('/:id/estatus', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   const { estatus } = req.body;
   if (estatus !== 'A' && estatus !== 'C') {
-    return res.status(400).json({ success: false, message: 'Estatus debe ser A o C' });
+    return res.status(400).json({ success: false, message: 'El estado debe ser A (activo) o C (cerrado).' });
   }
   const producto = await productosService.updateProductoEstatus(id, estatus);
   res.json({ success: true, data: producto });
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   try {
     await productosService.deleteProducto(id);

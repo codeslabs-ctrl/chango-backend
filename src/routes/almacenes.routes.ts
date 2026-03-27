@@ -1,15 +1,23 @@
 import { Router } from 'express';
 import * as almacenesService from '../services/almacenes.service';
 import { AppError } from '../utils/errors';
+import { authenticateJWT } from '../middleware/auth';
+import { requireNotVendedor } from '../middleware/vendedorAuth';
 
 const router = Router();
 
-router.get('/', async (_req, res) => {
+router.get('/', authenticateJWT, requireNotVendedor, async (_req, res) => {
   const data = await almacenesService.findAllAlmacenes();
   res.json({ success: true, data });
 });
 
-router.post('/', async (req, res) => {
+/** Almacenes activos para registrar ventas (vendedor incluido). Precio sigue siendo el del producto; el stock es por almacén. */
+router.get('/para-venta', authenticateJWT, async (_req, res) => {
+  const data = await almacenesService.findAlmacenesActivosParaVenta();
+  res.json({ success: true, data });
+});
+
+router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
   const { nombre, ubicacion, estatus } = req.body;
 
   if (!nombre) {
@@ -24,7 +32,7 @@ router.post('/', async (req, res) => {
   res.status(201).json({ success: true, data: almacen });
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   const { nombre, ubicacion, estatus } = req.body;
 
@@ -41,7 +49,7 @@ router.patch('/:id/estatus', async (req, res) => {
   const id = Number(req.params.id);
   const { estatus } = req.body;
   if (estatus !== 'A' && estatus !== 'C') {
-    return res.status(400).json({ success: false, message: 'Estatus debe ser A o C' });
+    return res.status(400).json({ success: false, message: 'El estado debe ser A (activo) o C (cerrado).' });
   }
   const almacen = await almacenesService.updateAlmacenEstatus(id, estatus);
   res.json({ success: true, data: almacen });
@@ -60,13 +68,13 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-router.get('/:almacenId/productos', async (req, res) => {
+router.get('/:almacenId/productos', authenticateJWT, requireNotVendedor, async (req, res) => {
   const almacenId = Number(req.params.almacenId);
   const data = await almacenesService.getProductosByAlmacen(almacenId);
   res.json({ success: true, data });
 });
 
-router.post('/:almacenId/productos/:productoId', async (req, res) => {
+router.post('/:almacenId/productos/:productoId', authenticateJWT, requireNotVendedor, async (req, res) => {
   const almacenId = Number(req.params.almacenId);
   const productoId = Number(req.params.productoId);
   const { stock_actual, stock_minimo, punto_reorden } = req.body;

@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import * as subcategoriasService from '../services/subcategorias.service';
+import { authenticateJWT } from '../middleware/auth';
+import { requireNotVendedor } from '../middleware/vendedorAuth';
 
 const router = Router();
 
-router.get('/', async (req, res) => {
+router.get('/', authenticateJWT, requireNotVendedor, async (req, res) => {
   const categoriaId = req.query.categoriaId
     ? Number(req.query.categoriaId)
     : undefined;
@@ -11,13 +13,13 @@ router.get('/', async (req, res) => {
   res.json({ success: true, data });
 });
 
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
   const { nombre, categoria_id } = req.body;
 
   if (!nombre || !categoria_id) {
     return res
       .status(400)
-      .json({ success: false, message: 'nombre y categoria_id son obligatorios' });
+      .json({ success: false, message: 'El nombre y la categoría son obligatorios.' });
   }
 
   const subcategoria = await subcategoriasService.createSubcategoria({
@@ -27,7 +29,7 @@ router.post('/', async (req, res) => {
   res.status(201).json({ success: true, data: subcategoria });
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   const { nombre, categoria_id } = req.body;
 
@@ -38,7 +40,7 @@ router.put('/:id', async (req, res) => {
   res.json({ success: true, data: subcategoria });
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   await subcategoriasService.deleteSubcategoria(id);
   res.status(204).send();
