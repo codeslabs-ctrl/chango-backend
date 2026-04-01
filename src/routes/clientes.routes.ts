@@ -1,14 +1,16 @@
 import { Router } from 'express';
 import * as clientesService from '../services/clientes.service';
+import { authenticateJWT } from '../middleware/auth';
+import { requireNotVendedor } from '../middleware/vendedorAuth';
 
 const router = Router();
 
-router.get('/', async (_req, res) => {
+router.get('/', authenticateJWT, async (_req, res) => {
   const data = await clientesService.findAllClientes();
   res.json({ success: true, data });
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateJWT, async (req, res) => {
   const id = Number(req.params.id);
   const cliente = await clientesService.findClienteById(id);
   if (!cliente) {
@@ -17,7 +19,7 @@ router.get('/:id', async (req, res) => {
   res.json({ success: true, data: cliente });
 });
 
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, async (req, res) => {
   const { nombre, cedula_rif, telefono, email, direccion } = req.body;
 
   if (!nombre) {
@@ -34,7 +36,7 @@ router.post('/', async (req, res) => {
   res.status(201).json({ success: true, data: cliente });
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateJWT, async (req, res) => {
   const id = Number(req.params.id);
   const { nombre, cedula_rif, telefono, email, direccion } = req.body;
 
@@ -48,7 +50,7 @@ router.put('/:id', async (req, res) => {
   res.json({ success: true, data: cliente });
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
   const id = Number(req.params.id);
   await clientesService.deleteCliente(id);
   res.status(204).send();

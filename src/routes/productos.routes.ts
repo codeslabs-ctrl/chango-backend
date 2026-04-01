@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import multer from 'multer';
+import { Router, type Request, type Response } from 'express';
+import multer, { type FileFilterCallback } from 'multer';
 import * as productosService from '../services/productos.service';
 import { UPLOAD_MAX_IMAGE_BYTES } from '../config/env';
 import { AppError, NotFoundError } from '../utils/errors';
@@ -11,7 +11,7 @@ const router = Router();
 const productoImagenUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: UPLOAD_MAX_IMAGE_BYTES },
-  fileFilter: (_req, file, cb) => {
+  fileFilter: (_req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
     const mime = (file.mimetype || '').toLowerCase();
     const ok =
       !mime ||
@@ -103,7 +103,7 @@ router.post(
   authenticateJWT,
   requireNotVendedor,
   productoImagenUpload.single('imagen'),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     if (Number.isNaN(id) || id < 1) {
       return res.status(400).json({ success: false, message: 'ID de producto inválido.' });

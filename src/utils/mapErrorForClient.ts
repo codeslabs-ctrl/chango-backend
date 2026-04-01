@@ -1,4 +1,4 @@
-import multer from 'multer';
+import { MulterError } from 'multer';
 import { AppError } from './errors';
 
 /** Mensajes claros en español para respuestas JSON (sin exponer detalles técnicos en inglés). */
@@ -7,7 +7,7 @@ export function mapErrorForClient(err: unknown): { status: number; message: stri
     return { status: err.status, message: err.message };
   }
 
-  if (err instanceof multer.MulterError) {
+  if (err instanceof MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       return { status: 400, message: 'La imagen supera el tamaño máximo permitido.' };
     }
