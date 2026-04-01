@@ -5,6 +5,16 @@ import type {
   UpdateProductoDto
 } from '../models/producto.model';
 import { AppError, NotFoundError } from '../utils/errors';
+import * as productoImagenService from './producto-imagen.service';
+
+/** Vacío / ausente → 10; se permite 0 explícito. */
+export function stockMinimoFromDto(a: Pick<{ stock_minimo?: number | null }, 'stock_minimo'>): number {
+  const v = a.stock_minimo;
+  if (v === undefined || v === null) return 10;
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return 10;
+  return Math.max(0, Math.floor(n));
+}
 
 async function validarAlmacenesActivos(almacenIds: number[]): Promise<void> {
   if (almacenIds.length === 0) return;
@@ -66,15 +76,18 @@ export async function findAllProductos(filters?: ProductosFilters): Promise<Prod
             ${existenciaField},
             p.unidad_medida,
             p.precio_venta_sugerido,
+            p.costo,
             p.fecha_ultimo_inventario,
             COALESCE(p.estatus, 'A') as estatus,
-            EXISTS(SELECT 1 FROM public.ventas_detalle vd WHERE vd.producto_id = p.producto_id) as tiene_ventas
+            EXISTS(SELECT 1 FROM public.ventas_detalle vd WHERE vd.producto_id = p.producto_id) as tiene_ventas,
+            p.imagen_url
      FROM public.productos p
      LEFT JOIN public.subcategorias s ON s.subcategoria_id = p.subcategoria_id
      LEFT JOIN public.proveedores pr ON pr.proveedor_id = p.proveedor_id
      ${joinAlmacen}
      ${where}
-     ORDER BY p.producto_id DESC`,
+     ORDER BY COALESCE(${almacenId ? 'pa.stock_actual' : 'p.existencia_actual'}, 0) ASC,
+              p.producto_id ASC`,
     params
   );
   return rows;
@@ -93,8 +106,10 @@ export async function findProductoById(id: number): Promise<Producto | null> {
             p.existencia_actual,
             p.unidad_medida,
             p.precio_venta_sugerido,
+            p.costo,
             p.fecha_ultimo_inventario,
-            COALESCE(p.estatus, 'A') as estatus
+            COALESCE(p.estatus, 'A') as estatus,
+            p.imagen_url
      FROM public.productos p
      LEFT JOIN public.subcategorias s ON s.subcategoria_id = p.subcategoria_id
      LEFT JOIN public.proveedores pr ON pr.proveedor_id = p.proveedor_id
@@ -104,15 +119,55 @@ export async function findProductoById(id: number): Promise<Producto | null> {
   return rows[0] || null;
 }
 
+export async function setProductoImagenDesdeUrl(productoId: number, sourceUrl: string): Promise<Producto> {
+  const existing = await findProductoById(productoId);
+  if (!existing) throw new NotFoundError('Producto');
+  const publicPath = await productoImagenService.downloadAndStoreProductoImage(sourceUrl);
+  await productoImagenService.removeProductoImageFile(existing.imagen_url ?? null);
+  const { rows } = await query<Producto>(
+    `UPDATE public.productos
+     SET imagen_url = $1, fecha_ultimo_inventario = now()
+     WHERE producto_id = $2
+     RETURNING producto_id, codigo_interno, descripcion, nombre, subcategoria_id,
+               proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido, costo,
+               fecha_ultimo_inventario, COALESCE(estatus, 'A') as estatus, imagen_url`,
+    [publicPath, productoId]
+  );
+  if (!rows[0]) throw new NotFoundError('Producto');
+  return rows[0];
+}
+
+export async function setProductoImagenDesdeArchivo(productoId: number, fileBuffer: Buffer): Promise<Producto> {
+  const existing = await findProductoById(productoId);
+  if (!existing) throw new NotFoundError('Producto');
+  const publicPath = await productoImagenService.validateAndStoreProductoImageBytes(fileBuffer);
+  await productoImagenService.removeProductoImageFile(existing.imagen_url ?? null);
+  const { rows } = await query<Producto>(
+    `UPDATE public.productos
+     SET imagen_url = $1, fecha_ultimo_inventario = now()
+     WHERE producto_id = $2
+     RETURNING producto_id, codigo_interno, descripcion, nombre, subcategoria_id,
+               proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido, costo,
+               fecha_ultimo_inventario, COALESCE(estatus, 'A') as estatus, imagen_url`,
+    [publicPath, productoId]
+  );
+  if (!rows[0]) throw new NotFoundError('Producto');
+  return rows[0];
+}
+
 export interface ProductoAlmacenInfo {
   almacen_id: number;
   almacen_nombre: string;
   stock_actual: number;
+  stock_minimo?: number;
 }
 
 export async function getProductoAlmacenes(productoId: number): Promise<ProductoAlmacenInfo[]> {
   const { rows } = await query<ProductoAlmacenInfo>(
-    `SELECT pa.almacen_id, a.nombre as almacen_nombre, pa.stock_actual
+    `SELECT pa.almacen_id,
+            a.nombre as almacen_nombre,
+            pa.stock_actual,
+            COALESCE(pa.stock_minimo, 0) as stock_minimo
      FROM public.producto_almacenes pa
      JOIN public.almacenes a ON a.almacen_id = pa.almacen_id
      WHERE pa.producto_id = $1
@@ -137,11 +192,12 @@ export async function createProducto(dto: CreateProductoDto): Promise<Producto> 
           existencia_actual,
           unidad_medida,
           precio_venta_sugerido,
+          costo,
           estatus
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING producto_id, codigo_interno, descripcion, nombre, subcategoria_id,
-                 proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido,
-                 fecha_ultimo_inventario, estatus`,
+                 proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido, costo,
+                 fecha_ultimo_inventario, estatus, imagen_url`,
       [
         dto.codigo_interno,
         dto.descripcion,
@@ -151,6 +207,7 @@ export async function createProducto(dto: CreateProductoDto): Promise<Producto> 
         0,
         dto.unidad_medida || null,
         dto.precio_venta_sugerido ?? 0,
+        dto.costo !== undefined && dto.costo !== null ? Math.max(0, Number(dto.costo)) : 0,
         dto.estatus || 'A'
       ]
     );
@@ -160,11 +217,12 @@ export async function createProducto(dto: CreateProductoDto): Promise<Producto> 
     let existenciaTotal = 0;
     for (const a of almacenes) {
       const stock = a.stock_actual ?? 0;
+      const stockMin = stockMinimoFromDto(a);
       existenciaTotal += stock;
       await client.query(
         `INSERT INTO public.producto_almacenes (producto_id, almacen_id, stock_actual, stock_minimo, punto_reorden)
-         VALUES ($1, $2, $3, 0, 0)`,
-        [producto.producto_id, a.almacen_id, stock]
+         VALUES ($1, $2, $3, $4, 0)`,
+        [producto.producto_id, a.almacen_id, stock, stockMin]
       );
     }
     await client.query(
@@ -185,6 +243,10 @@ export async function updateProducto(id: number, dto: UpdateProductoDto): Promis
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const costoSql =
+      dto.costo !== undefined && dto.costo !== null
+        ? Math.max(0, Number(dto.costo))
+        : null;
     const updateRes = await client.query<Producto>(
       `UPDATE public.productos
        SET codigo_interno = $1,
@@ -194,12 +256,13 @@ export async function updateProducto(id: number, dto: UpdateProductoDto): Promis
            proveedor_id = $5,
            unidad_medida = $6,
            precio_venta_sugerido = $7,
+           costo = COALESCE($8::numeric, costo),
            fecha_ultimo_inventario = now(),
-           estatus = COALESCE($8::char, estatus, 'A')
-       WHERE producto_id = $9
+           estatus = COALESCE($9::char, estatus, 'A')
+       WHERE producto_id = $10
        RETURNING producto_id, codigo_interno, descripcion, nombre, subcategoria_id,
-                 proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido,
-                 fecha_ultimo_inventario, COALESCE(estatus, 'A') as estatus`,
+                 proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido, costo,
+                 fecha_ultimo_inventario, COALESCE(estatus, 'A') as estatus, imagen_url`,
       [
         dto.codigo_interno ?? null,
         dto.descripcion ?? null,
@@ -208,6 +271,7 @@ export async function updateProducto(id: number, dto: UpdateProductoDto): Promis
         dto.proveedor_id ?? null,
         dto.unidad_medida ?? null,
         dto.precio_venta_sugerido ?? 0,
+        costoSql,
         dto.estatus ?? null,
         id
       ]
@@ -234,16 +298,28 @@ export async function updateProducto(id: number, dto: UpdateProductoDto): Promis
         existenciaTotal += stock;
         const exists = currentIds.has(a.almacen_id);
         if (exists) {
-          await client.query(
-            `UPDATE public.producto_almacenes SET stock_actual = $1
-             WHERE producto_id = $2 AND almacen_id = $3`,
-            [stock, id, a.almacen_id]
-          );
+          if (a.stock_minimo !== undefined && a.stock_minimo !== null) {
+            const sm = Math.max(0, Math.floor(Number(a.stock_minimo)));
+            const stockMin = Number.isFinite(sm) ? sm : stockMinimoFromDto(a);
+            await client.query(
+              `UPDATE public.producto_almacenes
+               SET stock_actual = $1, stock_minimo = $4
+               WHERE producto_id = $2 AND almacen_id = $3`,
+              [stock, id, a.almacen_id, stockMin]
+            );
+          } else {
+            await client.query(
+              `UPDATE public.producto_almacenes SET stock_actual = $1
+               WHERE producto_id = $2 AND almacen_id = $3`,
+              [stock, id, a.almacen_id]
+            );
+          }
         } else {
+          const stockMin = stockMinimoFromDto(a);
           await client.query(
             `INSERT INTO public.producto_almacenes (producto_id, almacen_id, stock_actual, stock_minimo, punto_reorden)
-             VALUES ($1, $2, $3, 0, 0)`,
-            [id, a.almacen_id, stock]
+             VALUES ($1, $2, $3, $4, 0)`,
+            [id, a.almacen_id, stock, stockMin]
           );
         }
       }
@@ -266,8 +342,8 @@ export async function updateProductoEstatus(id: number, estatus: 'A' | 'C'): Pro
   const { rows } = await query<Producto>(
     `UPDATE public.productos SET estatus = $1 WHERE producto_id = $2
      RETURNING producto_id, codigo_interno, descripcion, nombre, subcategoria_id,
-               proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido,
-               fecha_ultimo_inventario, estatus`,
+               proveedor_id, existencia_actual, unidad_medida, precio_venta_sugerido, costo,
+               fecha_ultimo_inventario, estatus, imagen_url`,
     [estatus, id]
   );
   if (!rows[0]) throw new NotFoundError('Producto');
@@ -315,7 +391,7 @@ export async function addStockProducto(
       } else {
         await client.query(
           `INSERT INTO public.producto_almacenes (producto_id, almacen_id, stock_actual, stock_minimo, punto_reorden)
-           VALUES ($1, $2, $3, 0, 0)`,
+           VALUES ($1, $2, $3, 10, 0)`,
           [productoId, almacen_id, cantidad_a_sumar]
         );
       }
@@ -335,8 +411,8 @@ export async function addStockProducto(
     const selectRes = await client.query<Producto>(
       `SELECT p.producto_id, p.codigo_interno, p.descripcion, p.nombre, p.subcategoria_id,
               s.nombre as subcategoria_nombre, p.proveedor_id, pr.nombre_empresa as proveedor_nombre,
-              p.existencia_actual, p.unidad_medida, p.precio_venta_sugerido,
-              p.fecha_ultimo_inventario, COALESCE(p.estatus, 'A') as estatus
+              p.existencia_actual, p.unidad_medida, p.precio_venta_sugerido, p.costo,
+              p.fecha_ultimo_inventario, COALESCE(p.estatus, 'A') as estatus, p.imagen_url
        FROM public.productos p
        LEFT JOIN public.subcategorias s ON s.subcategoria_id = p.subcategoria_id
        LEFT JOIN public.proveedores pr ON pr.proveedor_id = p.proveedor_id
@@ -363,6 +439,11 @@ export async function deleteProducto(id: number): Promise<void> {
   if (checkRes.rows.length > 0) {
     throw new AppError('No se puede eliminar el producto porque tiene ventas asociadas', 400);
   }
+  const imgRes = await query<{ imagen_url: string | null }>(
+    `SELECT imagen_url FROM public.productos WHERE producto_id = $1`,
+    [id]
+  );
+  const oldUrl = imgRes.rows[0]?.imagen_url;
   await query(`DELETE FROM public.producto_almacenes WHERE producto_id = $1`, [id]);
   const { rows } = await query(
     `DELETE FROM public.productos
@@ -371,4 +452,5 @@ export async function deleteProducto(id: number): Promise<void> {
     [id]
   );
   if (!rows[0]) throw new NotFoundError('Producto');
+  await productoImagenService.removeProductoImageFile(oldUrl ?? null);
 }

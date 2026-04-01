@@ -19,6 +19,11 @@ export const JWT_CONFIG = {
 
 export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4200';
 
+/** Tamaño máximo de imagen para productos (subida o URL), en bytes. Por defecto 500 KiB. */
+export const UPLOAD_MAX_IMAGE_BYTES = process.env.UPLOAD_MAX_IMAGE_BYTES
+  ? Math.min(Math.max(Number(process.env.UPLOAD_MAX_IMAGE_BYTES) || 0, 1024), 20 * 1024 * 1024)
+  : 500 * 1024;
+
 export const SMTP_CONFIG = {
   service: process.env.EMAIL_SERVICE || '',
   host: process.env.EMAIL_HOST || process.env.SMTP_HOST || '',

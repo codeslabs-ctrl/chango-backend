@@ -4,10 +4,17 @@ import type {
   VentaDetalle,
   VentaConDetalles,
   CreateVentaDto,
-  CreateVentaDetalleDto
+  CreateVentaDetalleDto,
+  ConfirmarVentaDto
 } from '../models/venta.model';
 import { AppError, NotFoundError } from '../utils/errors';
 import * as productosService from './productos.service';
+import {
+  normalizarTipoPago,
+  TIPO_PAGO_A_CONVENIR,
+  requiereReferenciaTipoPago,
+  esTipoPagoValidoParaScroll
+} from '../utils/metodosPago';
 
 /** Solo ventas con este usuario asignado (vendedor); exige coincidencia exacta, sin acceso a ventas sin asignar. */
 export function vendedorPuedeAccederVenta(venta: Venta, userId: number): boolean {
@@ -19,7 +26,44 @@ export async function crearVenta(
   /** Solo se guarda cuando el creador es vendedor (lo setea la ruta con el id del JWT). */
   usuarioIdVendedor?: number | null
 ): Promise<{ venta: Venta; detalles: CreateVentaDetalleDto[] }> {
-  const { cliente_id, metodo_pago, detalles, confirmar = false } = dto;
+  const {
+    cliente_id,
+    metodo_pago,
+    tipo_pago,
+    referencia_banco,
+    referencia_pago,
+    detalles,
+    confirmar = false
+  } = dto;
+
+  const refLinea = (referencia_banco ?? referencia_pago ?? '').toString().trim();
+  let tipoPago = normalizarTipoPago(tipo_pago ?? metodo_pago);
+
+  if (confirmar) {
+    if (!esTipoPagoValidoParaScroll(tipoPago)) {
+      throw new AppError(
+        'Elegí un método de pago válido (efectivo, transferencia o pago móvil).',
+        400
+      );
+    }
+    if (requiereReferenciaTipoPago(tipoPago) && !refLinea) {
+      throw new AppError(
+        'Indicá el número de referencia para transferencia o pago móvil.',
+        400
+      );
+    }
+  } else if (usuarioIdVendedor != null) {
+    if (!esTipoPagoValidoParaScroll(tipoPago)) {
+      throw new AppError(
+        'Elegí un método de pago (efectivo, transferencia o pago móvil).',
+        400
+      );
+    }
+  } else {
+    if (!esTipoPagoValidoParaScroll(tipoPago)) {
+      tipoPago = TIPO_PAGO_A_CONVENIR;
+    }
+  }
 
   if (!detalles || !Array.isArray(detalles) || detalles.length === 0) {
     throw new AppError('La venta debe tener al menos un producto en el detalle.', 400);
@@ -71,7 +115,16 @@ export async function crearVenta(
     }
   }
 
-  const estatus = confirmar ? 'CONFIRMADA' : 'POR CONFIRMAR';
+  const uid =
+    usuarioIdVendedor != null && usuarioIdVendedor > 0 ? usuarioIdVendedor : null;
+
+  /** Sin confirmar en alta: siempre POR CONFIRMAR (vendedor vs agente se distingue por usuario_id). */
+  let estatus: string;
+  if (confirmar) {
+    estatus = 'CONFIRMADA';
+  } else {
+    estatus = 'POR CONFIRMAR';
+  }
 
   const client = await pool.connect();
   try {
@@ -82,16 +135,20 @@ export async function crearVenta(
       0
     );
 
-    const uid = usuarioIdVendedor != null && usuarioIdVendedor > 0 ? usuarioIdVendedor : null;
-
     const ventaRes = await client.query<Venta>(
       `INSERT INTO public.ventas (cliente_id, total_venta, metodo_pago, estatus, usuario_id)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING venta_id, cliente_id, usuario_id, fecha_venta, total_venta, metodo_pago, estatus`,
-      [cliente_id ?? null, totalVenta, metodo_pago || null, estatus, uid]
+      [cliente_id ?? null, totalVenta, tipoPago, estatus, uid]
     );
 
     const venta = ventaRes.rows[0];
+
+    await client.query(
+      `INSERT INTO public.metodo_pago (venta_id, tipo_pago, referencia_banco)
+       VALUES ($1, $2, $3)`,
+      [venta.venta_id, tipoPago, refLinea || null]
+    );
 
     for (const d of detalles) {
       await client.query(
@@ -147,15 +204,27 @@ export async function findVentaById(id: number): Promise<VentaConDetalles | null
             c.nombre as cliente_nombre,
             c.cedula_rif as cliente_cedula_rif,
             c.telefono as cliente_telefono,
+            c.email as cliente_email,
+            c.direccion as cliente_direccion,
             v.usuario_id,
             u.nombre_usuario as usuario_nombre,
             v.fecha_venta,
             v.total_venta,
             v.metodo_pago,
-            v.estatus
+            v.referencia_pago,
+            v.estatus,
+            COALESCE(mp.tipo_pago, v.metodo_pago) AS tipo_pago,
+            COALESCE(mp.referencia_banco, v.referencia_pago) AS referencia_banco
      FROM public.ventas v
      LEFT JOIN public.clientes c ON c.cliente_id = v.cliente_id
      LEFT JOIN public.usuarios u ON u.id = v.usuario_id
+     LEFT JOIN LATERAL (
+       SELECT mp.tipo_pago, mp.referencia_banco
+       FROM public.metodo_pago mp
+       WHERE mp.venta_id = v.venta_id
+       ORDER BY mp.metodo_id DESC
+       LIMIT 1
+     ) mp ON true
      WHERE v.venta_id = $1`,
     [id]
   );
@@ -178,6 +247,54 @@ export async function findVentaById(id: number): Promise<VentaConDetalles | null
   return { venta, detalles };
 }
 
+type ProductoDestaque = {
+  imagen_url: string | null;
+  descripcion: string | null;
+  cantidad: number;
+};
+
+/** pg puede devolver `json` como objeto, string JSON o Buffer según versión/driver. */
+function normalizeProductosDestaque(raw: unknown): ProductoDestaque[] {
+  if (raw == null) return [];
+  let data: unknown = raw;
+
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(raw)) {
+    try {
+      data = JSON.parse(raw.toString('utf8'));
+    } catch {
+      return [];
+    }
+  } else if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!t || t === 'null') return [];
+    try {
+      data = JSON.parse(t);
+    } catch {
+      return [];
+    }
+  }
+
+  if (!Array.isArray(data)) return [];
+
+  return data.map((item) => {
+    if (!item || typeof item !== 'object') {
+      return { imagen_url: null, descripcion: null, cantidad: 0 };
+    }
+    const o = item as Record<string, unknown>;
+    const urlVal = o.imagen_url ?? o.imagenUrl ?? o.IMAGEN_URL;
+    const imagen_url =
+      urlVal == null || urlVal === '' ? null : String(urlVal).trim() || null;
+    const descVal = o.descripcion;
+    const descripcion = descVal == null ? null : String(descVal);
+    const cantidad = Number(o.cantidad);
+    return {
+      imagen_url,
+      descripcion,
+      cantidad: Number.isFinite(cantidad) ? cantidad : 0
+    };
+  });
+}
+
 export interface VentasFilters {
   clienteId?: number;
   estatus?: string;
@@ -189,6 +306,11 @@ export interface VentasFilters {
   busqueda?: string;
   /** Si viene informado, solo ventas de ese usuario (uso interno: vendedor autenticado). */
   usuarioId?: number;
+  /**
+   * Cola dashboard: pendientes con vendedor (usuario_id no nulo) vs agente (usuario_id nulo).
+   * Si se define, filtra estados pendientes y no debe combinarse con `estatus` genérico en el cliente.
+   */
+  pendientesTipo?: 'vendedor' | 'agente';
 }
 
 export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
@@ -203,11 +325,29 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
     params.push(filters.usuarioId);
     conditions.push(`v.usuario_id = $${params.length}`);
   }
-  if (filters?.estatus) {
-    if (filters.estatus === 'POR CONFIRMAR') {
-      conditions.push(`(v.estatus = 'POR CONFIRMAR' OR v.estatus = 'PENDIENTE')`);
+
+  const pt = filters?.pendientesTipo;
+  if (pt === 'vendedor' || pt === 'agente') {
+    conditions.push(
+      `(v.estatus = 'POR CONFIRMAR' OR v.estatus = 'PENDIENTE' OR v.estatus = 'POR FACTURAR')`
+    );
+    conditions.push(`v.estatus NOT IN ('CONFIRMADA', 'ELIMINADA')`);
+    if (pt === 'vendedor') {
+      conditions.push(`v.usuario_id IS NOT NULL`);
     } else {
-      params.push(filters.estatus);
+      conditions.push(`v.usuario_id IS NULL`);
+    }
+  } else if (filters?.estatus) {
+    const e = filters.estatus.trim();
+    if (e === 'POR CONFIRMAR') {
+      conditions.push(`(v.estatus IN ('POR CONFIRMAR', 'PENDIENTE', 'POR FACTURAR'))`);
+    } else if (e === 'POR FACTURAR') {
+      conditions.push(`v.usuario_id IS NULL`);
+      conditions.push(
+        `(v.estatus = 'POR CONFIRMAR' OR v.estatus = 'PENDIENTE' OR v.estatus = 'POR FACTURAR')`
+      );
+    } else {
+      params.push(e);
       conditions.push(`v.estatus = $${params.length}`);
     }
   }
@@ -258,6 +398,30 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
              FROM public.ventas_detalle vd
              JOIN public.productos p ON p.producto_id = vd.producto_id
              WHERE vd.venta_id = v.venta_id) as productos_nombres,
+            (SELECT COUNT(*)::int FROM public.ventas_detalle vd WHERE vd.venta_id = v.venta_id) as cantidad_productos,
+            (SELECT COALESCE(
+               (SELECT json_agg(
+                  json_build_object(
+                    'imagen_url', s.imagen_url,
+                    'descripcion', s.descripcion,
+                    'cantidad', s.cantidad
+                  )
+                  ORDER BY s.ord_cant DESC, s.detalle_id ASC
+                )
+                FROM (
+                  SELECT p.imagen_url,
+                         p.descripcion,
+                         vd.cantidad::double precision AS cantidad,
+                         vd.cantidad AS ord_cant,
+                         vd.detalle_id
+                  FROM public.ventas_detalle vd
+                  INNER JOIN public.productos p ON p.producto_id = vd.producto_id
+                  WHERE vd.venta_id = v.venta_id
+                  ORDER BY vd.cantidad DESC, vd.detalle_id ASC
+                ) s
+               ),
+               '[]'::json
+             )) AS productos_destaque,
             v.usuario_id,
             u.nombre_usuario as usuario_nombre,
             v.fecha_venta,
@@ -272,13 +436,86 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
     params
   );
 
+  for (const row of rows) {
+    const r = row as Venta & { productos_destaque?: unknown };
+    r.productos_destaque = normalizeProductosDestaque(r.productos_destaque);
+  }
+
   return rows;
 }
 
-export async function confirmarVenta(id: number): Promise<VentaConDetalles | null> {
+export async function confirmarVenta(
+  id: number,
+  dto?: ConfirmarVentaDto | null
+): Promise<VentaConDetalles | null> {
   const data = await findVentaById(id);
-  const estatusValido = data?.venta.estatus === 'PENDIENTE' || data?.venta.estatus === 'POR CONFIRMAR';
+  const estatusValido =
+    data?.venta.estatus === 'PENDIENTE' ||
+    data?.venta.estatus === 'POR CONFIRMAR' ||
+    data?.venta.estatus === 'POR FACTURAR';
   if (!data || !estatusValido) return null;
+
+  const estatus = data.venta.estatus;
+
+  const tipoActual = normalizarTipoPago(
+    data.venta.tipo_pago ?? data.venta.metodo_pago ?? ''
+  );
+  const refExistente = (
+    data.venta.referencia_banco ??
+    data.venta.referencia_pago ??
+    ''
+  )
+    .toString()
+    .trim();
+
+  const refDto = (dto?.referencia_banco ?? dto?.referencia_pago ?? '').toString().trim();
+
+  let tipoFinal: string;
+  let refFinal: string;
+
+  const ventaSinVendedor = data.venta.usuario_id == null;
+
+  if (ventaSinVendedor) {
+    const tipoDto = normalizarTipoPago(dto?.tipo_pago ?? dto?.metodo_pago ?? '');
+    if (!esTipoPagoValidoParaScroll(tipoDto)) {
+      throw new AppError(
+        'Elegí un método de pago (efectivo, transferencia o pago móvil).',
+        400
+      );
+    }
+    tipoFinal = tipoDto;
+    refFinal = refDto || refExistente;
+  } else {
+    tipoFinal = tipoActual;
+    refFinal = refDto || refExistente;
+    if (!esTipoPagoValidoParaScroll(tipoFinal)) {
+      throw new AppError(
+        'Esta venta no tiene un método de pago válido para confirmar (no puede ser «a convenir»).',
+        400
+      );
+    }
+  }
+
+  if (requiereReferenciaTipoPago(tipoFinal) && !refFinal) {
+    throw new AppError(
+      'Indicá el número de referencia para transferencia o pago móvil.',
+      400
+    );
+  }
+
+  let clienteUpdate: ConfirmarVentaDto['cliente'] | null = null;
+  if (data.venta.cliente_id && dto?.cliente) {
+    const x = dto.cliente;
+    const nombre = (x.nombre ?? '').trim();
+    if (!nombre) {
+      throw new AppError('El nombre del cliente es obligatorio.', 400);
+    }
+    clienteUpdate = x;
+  }
+
+  const refGuardar = requiereReferenciaTipoPago(tipoFinal)
+    ? refFinal
+    : refDto || refExistente || null;
 
   const { rows: despachos } = await query<{ producto_id: number; almacen_id: number; cantidad: number }>(
     `SELECT producto_id, almacen_id, cantidad FROM public.ventas_detalle_despacho WHERE venta_id = $1`,
@@ -288,6 +525,43 @@ export async function confirmarVenta(id: number): Promise<VentaConDetalles | nul
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    if (clienteUpdate && data.venta.cliente_id) {
+      const x = clienteUpdate;
+      const nombre = (x.nombre ?? '').trim();
+      await client.query(
+        `UPDATE public.clientes SET
+           nombre = $1,
+           cedula_rif = NULLIF(TRIM($2), ''),
+           telefono = NULLIF(TRIM($3), ''),
+           email = NULLIF(TRIM($4), ''),
+           direccion = NULLIF(TRIM($5), '')
+         WHERE cliente_id = $6`,
+        [
+          nombre,
+          x.cedula_rif ?? '',
+          x.telefono ?? '',
+          x.email ?? '',
+          x.direccion ?? '',
+          data.venta.cliente_id
+        ]
+      );
+    }
+
+    await client.query(
+      `UPDATE public.ventas
+       SET metodo_pago = $1,
+           referencia_pago = $2
+       WHERE venta_id = $3`,
+      [tipoFinal, refGuardar || null, id]
+    );
+
+    await client.query(`DELETE FROM public.metodo_pago WHERE venta_id = $1`, [id]);
+    await client.query(
+      `INSERT INTO public.metodo_pago (venta_id, tipo_pago, referencia_banco)
+       VALUES ($1, $2, $3)`,
+      [id, tipoFinal, refGuardar || null]
+    );
 
     if (despachos.length > 0) {
       for (const desp of despachos) {

@@ -98,9 +98,13 @@ export async function getVendedorTopClientes(
   return rows;
 }
 
-/** Cola de aprobación - ventas pendientes */
+/** Cola de aprobación: pendientes (incluye legacy POR FACTURAR hasta migrar). */
 export async function getVentasPendientes() {
-  const { rows } = await query('SELECT * FROM vista_ventas_pendientes');
+  const { rows } = await query<{ venta_id: number }>(
+    `SELECT v.venta_id
+     FROM public.ventas v
+     WHERE v.estatus IN ('POR CONFIRMAR', 'PENDIENTE', 'POR FACTURAR')`
+  );
   return rows;
 }
 
@@ -110,9 +114,74 @@ export async function getComparativaMensual() {
   return rows;
 }
 
-/** Top 10 Productos Más Vendidos */
+/**
+ * Resumen por vendedor en rango (CONFIRMADA y demás no eliminadas).
+ * usuario_id NULL agrupa ventas de agente externo.
+ */
+export async function getResumenPorVendedor(fechaDesde?: string, fechaHasta?: string) {
+  const { desde, hasta } = normalizarFechasVendedor(fechaDesde, fechaHasta);
+  const { rows } = await query<{
+    usuario_id: number | null;
+    nombre_usuario: string | null;
+    unidades_vendidas: string | number;
+    ingresos_totales: string | number;
+  }>(
+    `WITH por_venta AS (
+       SELECT v.usuario_id,
+              v.venta_id,
+              v.total_venta,
+              SUM(vd.cantidad)::numeric AS unidades_linea
+       FROM public.ventas v
+       INNER JOIN public.ventas_detalle vd ON vd.venta_id = v.venta_id
+       WHERE v.estatus <> 'ELIMINADA'
+         AND v.fecha_venta::date >= $1::date
+         AND v.fecha_venta::date <= $2::date
+       GROUP BY v.usuario_id, v.venta_id, v.total_venta
+     ),
+     por_vendedor AS (
+       SELECT usuario_id,
+              SUM(unidades_linea)::numeric AS unidades_vendidas,
+              SUM(total_venta)::numeric AS ingresos_totales
+       FROM por_venta
+       GROUP BY usuario_id
+     )
+     SELECT p.usuario_id,
+            u.nombre_usuario,
+            p.unidades_vendidas,
+            p.ingresos_totales
+     FROM por_vendedor p
+     LEFT JOIN public.usuarios u ON u.id = p.usuario_id
+     ORDER BY p.ingresos_totales DESC NULLS LAST`,
+    [desde, hasta]
+  );
+  return rows;
+}
+
+/** Top 10 productos por unidades vendidas (histórico, ventas no eliminadas). */
 export async function getTopProductos() {
-  const { rows } = await query('SELECT * FROM vista_top_productos');
+  const { rows } = await query<{
+    producto_id: number;
+    nombre: string | null;
+    codigo_interno: string | null;
+    unidades_vendidas: string | number;
+  }>(
+    `SELECT p.producto_id,
+            COALESCE(
+              NULLIF(TRIM(p.descripcion), ''),
+              NULLIF(TRIM(p.nombre), ''),
+              p.codigo_interno,
+              '#'
+            ) AS nombre,
+            p.codigo_interno,
+            SUM(vd.cantidad)::numeric AS unidades_vendidas
+     FROM public.ventas_detalle vd
+     INNER JOIN public.ventas v ON v.venta_id = vd.venta_id
+     INNER JOIN public.productos p ON p.producto_id = vd.producto_id
+     WHERE v.estatus <> 'ELIMINADA'
+     GROUP BY p.producto_id, p.descripcion, p.nombre, p.codigo_interno
+     ORDER BY unidades_vendidas DESC
+     LIMIT 10`
+  );
   return rows;
 }
 

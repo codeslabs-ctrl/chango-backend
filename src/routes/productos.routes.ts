@@ -1,21 +1,56 @@
 import { Router } from 'express';
+import multer from 'multer';
 import * as productosService from '../services/productos.service';
+import { UPLOAD_MAX_IMAGE_BYTES } from '../config/env';
 import { AppError, NotFoundError } from '../utils/errors';
 import { authenticateJWT } from '../middleware/auth';
 import { requireNotVendedor } from '../middleware/vendedorAuth';
 
 const router = Router();
 
-function parseAlmacenes(raw: unknown): { almacen_id: number; stock_actual: number }[] {
+const productoImagenUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: UPLOAD_MAX_IMAGE_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const mime = (file.mimetype || '').toLowerCase();
+    const ok =
+      !mime ||
+      mime === 'image/jpeg' ||
+      mime === 'image/jpg' ||
+      mime === 'image/pjpeg' ||
+      mime === 'image/png' ||
+      mime === 'image/gif' ||
+      mime === 'image/webp';
+    if (ok) cb(null, true);
+    else cb(new AppError('Solo se permiten imágenes JPEG, PNG, GIF o WebP.', 400));
+  }
+});
+
+function parseAlmacenes(raw: unknown): {
+  almacen_id: number;
+  stock_actual: number;
+  stock_minimo?: number;
+}[] {
   if (!Array.isArray(raw)) return [];
-  const result: { almacen_id: number; stock_actual: number }[] = [];
+  const result: { almacen_id: number; stock_actual: number; stock_minimo?: number }[] = [];
   for (const x of raw) {
     if (x && typeof x === 'object' && 'almacen_id' in x) {
       const id = Number((x as { almacen_id: unknown }).almacen_id);
       const stockRaw = (x as { stock_actual?: unknown }).stock_actual;
-      const stock = typeof stockRaw === 'number' ? stockRaw : (typeof stockRaw === 'string' ? parseFloat(stockRaw) : 0);
+      const stock = typeof stockRaw === 'number' ? stockRaw : typeof stockRaw === 'string' ? parseFloat(stockRaw) : 0;
       if (!isNaN(id)) {
-        result.push({ almacen_id: id, stock_actual: isNaN(stock) ? 0 : Math.max(0, stock) });
+        const row: { almacen_id: number; stock_actual: number; stock_minimo?: number } = {
+          almacen_id: id,
+          stock_actual: isNaN(stock) ? 0 : Math.max(0, stock)
+        };
+        if ('stock_minimo' in x) {
+          const smRaw = (x as { stock_minimo?: unknown }).stock_minimo;
+          if (smRaw !== undefined && smRaw !== null && smRaw !== '') {
+            const sm = typeof smRaw === 'number' ? smRaw : parseFloat(String(smRaw));
+            if (!isNaN(sm)) row.stock_minimo = Math.max(0, Math.floor(sm));
+          }
+        }
+        result.push(row);
       }
     }
   }
@@ -44,6 +79,49 @@ router.get('/:id', async (req, res) => {
   res.json({ success: true, data: { ...producto, almacenes } });
 });
 
+router.post('/:id/imagen-desde-url', authenticateJWT, requireNotVendedor, async (req, res) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id) || id < 1) {
+    return res.status(400).json({ success: false, message: 'ID de producto inválido.' });
+  }
+  const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
+  if (!url) {
+    return res.status(400).json({ success: false, message: 'Indicá la URL de la imagen.' });
+  }
+  try {
+    const producto = await productosService.setProductoImagenDesdeUrl(id, url);
+    res.json({ success: true, data: producto });
+  } catch (err) {
+    if (err instanceof AppError) return res.status(err.status).json({ success: false, message: err.message });
+    if (err instanceof NotFoundError) return res.status(404).json({ success: false, message: err.message });
+    throw err;
+  }
+});
+
+router.post(
+  '/:id/imagen',
+  authenticateJWT,
+  requireNotVendedor,
+  productoImagenUpload.single('imagen'),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id) || id < 1) {
+      return res.status(400).json({ success: false, message: 'ID de producto inválido.' });
+    }
+    const file = req.file;
+    if (!file?.buffer?.length) {
+      return res.status(400).json({ success: false, message: 'Enviá un archivo de imagen en el campo "imagen".' });
+    }
+    try {
+      const producto = await productosService.setProductoImagenDesdeArchivo(id, file.buffer);
+      res.json({ success: true, data: producto });
+    } catch (err) {
+      if (err instanceof AppError) return res.status(err.status).json({ success: false, message: err.message });
+      throw err;
+    }
+  }
+);
+
 router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
   const {
     codigo_interno,
@@ -53,6 +131,7 @@ router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
     proveedor_id,
     unidad_medida,
     precio_venta_sugerido,
+    costo,
     almacenes,
     estatus
   } = req.body;
@@ -71,6 +150,7 @@ router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
     proveedor_id,
     unidad_medida,
     precio_venta_sugerido,
+    costo: costo !== undefined && costo !== null ? Number(costo) : undefined,
     almacenes: parseAlmacenes(almacenes),
     estatus: estatus === 'C' ? 'C' : 'A'
   });
@@ -87,6 +167,7 @@ router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
     proveedor_id,
     unidad_medida,
     precio_venta_sugerido,
+    costo,
     almacenes,
     estatus
   } = req.body;
@@ -100,6 +181,7 @@ router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
     proveedor_id,
     unidad_medida,
     precio_venta_sugerido,
+    costo: costo !== undefined && costo !== null ? Number(costo) : undefined,
     almacenes: parsedAlmacenes,
     estatus: estatus === 'C' ? 'C' : estatus === 'A' ? 'A' : undefined
   });

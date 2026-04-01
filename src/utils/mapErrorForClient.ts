@@ -1,9 +1,17 @@
+import multer from 'multer';
 import { AppError } from './errors';
 
 /** Mensajes claros en español para respuestas JSON (sin exponer detalles técnicos en inglés). */
 export function mapErrorForClient(err: unknown): { status: number; message: string } {
   if (err instanceof AppError) {
     return { status: err.status, message: err.message };
+  }
+
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return { status: 400, message: 'La imagen supera el tamaño máximo permitido.' };
+    }
+    return { status: 400, message: 'No se pudo procesar el archivo enviado.' };
   }
 
   if (isPostgresError(err)) {

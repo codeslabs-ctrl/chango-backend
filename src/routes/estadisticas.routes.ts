@@ -40,6 +40,13 @@ router.get('/comparativa-mensual', authenticateJWT, requireNotVendedor, async (_
   res.json({ success: true, data });
 });
 
+router.get('/resumen-por-vendedor', authenticateJWT, requireNotVendedor, async (req, res) => {
+  const fechaDesde = typeof req.query.fechaDesde === 'string' ? req.query.fechaDesde : undefined;
+  const fechaHasta = typeof req.query.fechaHasta === 'string' ? req.query.fechaHasta : undefined;
+  const data = await estadisticasService.getResumenPorVendedor(fechaDesde, fechaHasta);
+  res.json({ success: true, data });
+});
+
 router.get('/top-productos', authenticateJWT, requireNotVendedor, async (_req, res) => {
   const data = await estadisticasService.getTopProductos();
   res.json({ success: true, data });

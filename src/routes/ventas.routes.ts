@@ -1,9 +1,21 @@
 import { Router, Response } from 'express';
 import * as ventasService from '../services/ventas.service';
+import type { ConfirmarVentaDto } from '../models/venta.model';
 import { authenticateJWT } from '../middleware/auth';
 import type { AuthRequest } from '../types/auth';
 
 const router = Router();
+
+/** Query string o array (Express); normaliza para filtros de estatus. */
+function queryStringParam(val: unknown): string | undefined {
+  if (val == null) return undefined;
+  if (Array.isArray(val)) {
+    const first = val[0];
+    return first != null && String(first).trim() !== '' ? String(first).trim() : undefined;
+  }
+  const s = String(val).trim();
+  return s !== '' ? s : undefined;
+}
 
 router.patch('/:id/confirmar', authenticateJWT, async (req: AuthRequest, res: Response) => {
   const id = Number(req.params.id);
@@ -18,7 +30,7 @@ router.patch('/:id/confirmar', authenticateJWT, async (req: AuthRequest, res: Re
   ) {
     return res.status(403).json({ success: false, message: 'No tenés permiso para esta venta.' });
   }
-  const data = await ventasService.confirmarVenta(id);
+  const data = await ventasService.confirmarVenta(id, req.body as ConfirmarVentaDto);
   if (!data) {
     return res.status(404).json({ success: false, message: 'Venta no encontrada o ya confirmada' });
   }
@@ -46,7 +58,8 @@ router.patch('/:id/eliminar', authenticateJWT, async (req: AuthRequest, res: Res
 });
 
 router.post('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
-  const { cliente_id, metodo_pago, detalles, confirmar } = req.body;
+  const { cliente_id, metodo_pago, tipo_pago, referencia_banco, referencia_pago, detalles, confirmar } =
+    req.body;
 
   if (cliente_id == null || cliente_id === '') {
     return res
@@ -58,7 +71,8 @@ router.post('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
       .status(400)
       .json({ success: false, message: 'La venta debe tener al menos un detalle' });
   }
-  if (confirmar && !(metodo_pago || '').toString().trim()) {
+  const pagoIndicado = `${tipo_pago ?? ''} ${metodo_pago ?? ''}`.trim();
+  if (confirmar && !pagoIndicado) {
     return res
       .status(400)
       .json({ success: false, message: 'El método de pago es obligatorio al confirmar la venta' });
@@ -70,6 +84,9 @@ router.post('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
     {
       cliente_id,
       metodo_pago,
+      tipo_pago,
+      referencia_banco,
+      referencia_pago,
       detalles,
       confirmar: !!confirmar
     },
@@ -79,12 +96,22 @@ router.post('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
 });
 
 router.get('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
+  const estatusRaw = queryStringParam(req.query.estatus);
+  const estatusNorm = estatusRaw ? estatusRaw.replace(/_/g, ' ') : undefined;
+
+  const pendientesTipoRaw = queryStringParam(req.query.pendientesTipo);
+  const pendientesTipo =
+    pendientesTipoRaw === 'vendedor' || pendientesTipoRaw === 'agente'
+      ? pendientesTipoRaw
+      : undefined;
+
   const filters: ventasService.VentasFilters = {
     clienteId: req.query.clienteId ? Number(req.query.clienteId) : undefined,
-    estatus: typeof req.query.estatus === 'string' ? req.query.estatus : undefined,
+    estatus: pendientesTipo ? undefined : estatusNorm,
     fechaDesde: typeof req.query.fechaDesde === 'string' ? req.query.fechaDesde : undefined,
     fechaHasta: typeof req.query.fechaHasta === 'string' ? req.query.fechaHasta : undefined,
-    busqueda: typeof req.query.busqueda === 'string' ? req.query.busqueda : undefined
+    busqueda: typeof req.query.busqueda === 'string' ? req.query.busqueda : undefined,
+    pendientesTipo
   };
   if (req.user?.rol === 'vendedor' && req.user.id != null) {
     filters.usuarioId = req.user.id;

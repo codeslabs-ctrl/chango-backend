@@ -10,14 +10,20 @@ export interface Producto {
   existencia_actual: number;
   unidad_medida: string | null;
   precio_venta_sugerido: number;
+  /** Costo unitario (referencia interna) */
+  costo?: number;
   fecha_ultimo_inventario: Date | null;
   estatus?: string;
   tiene_ventas?: boolean;
+  /** Ruta pública servida bajo `/uploads/productos/...` o URL absoluta legada */
+  imagen_url?: string | null;
 }
 
 export interface ProductoAlmacenDto {
   almacen_id: number;
   stock_actual?: number;
+  /** Si no se envía, el backend usa 10 */
+  stock_minimo?: number;
 }
 
 export interface CreateProductoDto {
@@ -28,6 +34,7 @@ export interface CreateProductoDto {
   proveedor_id?: number;
   unidad_medida?: string;
   precio_venta_sugerido?: number;
+  costo?: number;
   almacenes?: ProductoAlmacenDto[];
   estatus?: 'A' | 'C';
 }

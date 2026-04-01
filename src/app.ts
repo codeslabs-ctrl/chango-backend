@@ -1,14 +1,18 @@
 import 'express-async-errors';
 import express from 'express';
+import path from 'path';
 import cors from 'cors';
 import routes from './routes';
 import { errorHandler } from './middleware/errorHandler';
 import { pool } from './config/db';
+import { UPLOAD_ROOT } from './config/paths';
 
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+app.use('/uploads', express.static(path.resolve(UPLOAD_ROOT)));
 
 app.use('/api', (_req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
