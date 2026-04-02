@@ -118,12 +118,12 @@ export async function crearVenta(
   const uid =
     usuarioIdVendedor != null && usuarioIdVendedor > 0 ? usuarioIdVendedor : null;
 
-  /** Sin confirmar en alta: siempre POR CONFIRMAR (vendedor vs agente se distingue por usuario_id). */
+  /** Sin confirmar en alta: POR FACTURAR (vendedor vs agente se distingue por usuario_id). */
   let estatus: string;
   if (confirmar) {
-    estatus = 'CONFIRMADA';
+    estatus = 'FACTURADA';
   } else {
-    estatus = 'POR CONFIRMAR';
+    estatus = 'POR FACTURAR';
   }
 
   const client = await pool.connect();
@@ -328,10 +328,8 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
 
   const pt = filters?.pendientesTipo;
   if (pt === 'vendedor' || pt === 'agente') {
-    conditions.push(
-      `(v.estatus = 'POR CONFIRMAR' OR v.estatus = 'PENDIENTE' OR v.estatus = 'POR FACTURAR')`
-    );
-    conditions.push(`v.estatus NOT IN ('CONFIRMADA', 'ELIMINADA')`);
+    conditions.push(`(v.estatus IN ('POR FACTURAR', 'PENDIENTE'))`);
+    conditions.push(`v.estatus NOT IN ('FACTURADA', 'ELIMINADA')`);
     if (pt === 'vendedor') {
       conditions.push(`v.usuario_id IS NOT NULL`);
     } else {
@@ -339,13 +337,8 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
     }
   } else if (filters?.estatus) {
     const e = filters.estatus.trim();
-    if (e === 'POR CONFIRMAR') {
-      conditions.push(`(v.estatus IN ('POR CONFIRMAR', 'PENDIENTE', 'POR FACTURAR'))`);
-    } else if (e === 'POR FACTURAR') {
-      conditions.push(`v.usuario_id IS NULL`);
-      conditions.push(
-        `(v.estatus = 'POR CONFIRMAR' OR v.estatus = 'PENDIENTE' OR v.estatus = 'POR FACTURAR')`
-      );
+    if (e === 'POR FACTURAR') {
+      conditions.push(`(v.estatus IN ('POR FACTURAR', 'PENDIENTE'))`);
     } else {
       params.push(e);
       conditions.push(`v.estatus = $${params.length}`);
@@ -450,12 +443,8 @@ export async function confirmarVenta(
 ): Promise<VentaConDetalles | null> {
   const data = await findVentaById(id);
   const estatusValido =
-    data?.venta.estatus === 'PENDIENTE' ||
-    data?.venta.estatus === 'POR CONFIRMAR' ||
-    data?.venta.estatus === 'POR FACTURAR';
+    data?.venta.estatus === 'PENDIENTE' || data?.venta.estatus === 'POR FACTURAR';
   if (!data || !estatusValido) return null;
-
-  const estatus = data.venta.estatus;
 
   const tipoActual = normalizarTipoPago(
     data.venta.tipo_pago ?? data.venta.metodo_pago ?? ''
@@ -612,7 +601,7 @@ export async function confirmarVenta(
     }
 
     await client.query(
-      `UPDATE public.ventas SET estatus = 'CONFIRMADA' WHERE venta_id = $1`,
+      `UPDATE public.ventas SET estatus = 'FACTURADA' WHERE venta_id = $1`,
       [id]
     );
 

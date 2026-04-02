@@ -98,12 +98,12 @@ export async function getVendedorTopClientes(
   return rows;
 }
 
-/** Cola de aprobación: pendientes (incluye legacy POR FACTURAR hasta migrar). */
+/** Cola de aprobación: pendientes de facturar. */
 export async function getVentasPendientes() {
   const { rows } = await query<{ venta_id: number }>(
     `SELECT v.venta_id
      FROM public.ventas v
-     WHERE v.estatus IN ('POR CONFIRMAR', 'PENDIENTE', 'POR FACTURAR')`
+     WHERE v.estatus IN ('POR FACTURAR', 'PENDIENTE')`
   );
   return rows;
 }
@@ -115,7 +115,7 @@ export async function getComparativaMensual() {
 }
 
 /**
- * Resumen por vendedor en rango (CONFIRMADA y demás no eliminadas).
+ * Resumen por vendedor en rango (FACTURADA y demás no eliminadas).
  * usuario_id NULL agrupa ventas de agente externo.
  */
 export async function getResumenPorVendedor(fechaDesde?: string, fechaHasta?: string) {

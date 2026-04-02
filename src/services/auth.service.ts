@@ -3,9 +3,15 @@ import { query } from '../config/db';
 import { comparePassword, hashPassword } from '../utils/password';
 import { signToken } from '../utils/jwt';
 import { sendOtpEmail } from './email.service';
-import type { UsuarioConPassword } from '../models/usuario.model';
-import type { LoginDto, LoginResponse } from '../models/usuario.model';
+import type { UsuarioConPassword, LoginDto, LoginResponse, RolUsuario } from '../models/usuario.model';
 import { AppError } from '../utils/errors';
+
+function rolParaSesion(raw: string | null | undefined): RolUsuario {
+  const r = (raw ?? '').trim();
+  if (r === 'administrador' || r === 'vendedor' || r === 'facturador') return r;
+  if (r === 'usuario') return 'facturador';
+  return 'facturador';
+}
 
 export async function login(dto: LoginDto): Promise<LoginResponse> {
   const { rows } = await query<UsuarioConPassword & { first_login?: boolean; nombre_usuario?: string | null }>(
@@ -29,7 +35,8 @@ export async function login(dto: LoginDto): Promise<LoginResponse> {
     throw new AppError('Credenciales inválidas', 401);
   }
 
-  const token = signToken({ userId: user.id, username: user.username, rol: user.rol });
+  const rolSesion = rolParaSesion(user.rol as string);
+  const token = signToken({ userId: user.id, username: user.username, rol: rolSesion });
   const requiresPasswordChange = user.first_login === true;
 
   if (!requiresPasswordChange) {
@@ -51,7 +58,7 @@ export async function login(dto: LoginDto): Promise<LoginResponse> {
       username: user.username,
       email: user.email,
       nombre_usuario: user.nombre_usuario ?? null,
-      rol: user.rol || 'usuario'
+      rol: rolSesion
     }
   };
   if (requiresPasswordChange) result.requiresPasswordChange = true;

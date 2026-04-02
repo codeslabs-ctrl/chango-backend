@@ -92,6 +92,12 @@ function mapPostgresError(err: { code: string; constraint?: string; message?: st
         status: 400,
         message: 'El formato de uno de los datos no es válido.'
       };
+    case '42703':
+      return {
+        status: 503,
+        message:
+          'Faltan columnas en la base de datos (por ejemplo comisiones en ventas). Ejecutá el script scripts/add-comisiones-vendedor.sql en PostgreSQL y reiniciá el servidor.'
+      };
     default:
       return {
         status: 500,

@@ -9,11 +9,13 @@ import ventasRouter from './ventas.routes';
 import estadisticasRouter from './estadisticas.routes';
 import authRouter from './auth.routes';
 import usuariosRouter from './usuarios.routes';
+import comisionesRouter from './comisiones.routes';
 
 const router = Router();
 
 router.use('/auth', authRouter);
 router.use('/usuarios', usuariosRouter);
+router.use('/comisiones', comisionesRouter);
 router.use('/clientes', clientesRouter);
 router.use('/categorias', categoriasRouter);
 router.use('/subcategorias', subcategoriasRouter);

@@ -15,7 +15,8 @@ export function authenticateJWT(req: AuthRequest, res: Response, next: NextFunct
 
   try {
     const payload = verifyToken(token);
-    req.user = { id: payload.userId, username: payload.username, rol: payload.rol };
+    const rol = payload.rol === 'usuario' ? 'facturador' : payload.rol;
+    req.user = { id: payload.userId, username: payload.username, rol };
     next();
   } catch (error) {
     return res.status(401).json({ success: false, message: 'La sesión expiró o el token no es válido. Iniciá sesión de nuevo.' });

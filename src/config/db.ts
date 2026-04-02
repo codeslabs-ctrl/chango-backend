@@ -12,11 +12,11 @@ export const pool = new Pool({
 export async function query<T extends QueryResultRow = any>(
   text: string,
   params?: any[]
-): Promise<{ rows: T[] }> {
+): Promise<{ rows: T[]; rowCount: number }> {
   const client = await pool.connect();
   try {
     const res = await client.query<T>(text, params);
-    return { rows: res.rows };
+    return { rows: res.rows, rowCount: res.rowCount ?? 0 };
   } finally {
     client.release();
   }

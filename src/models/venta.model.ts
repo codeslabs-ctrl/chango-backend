@@ -74,5 +74,5 @@ export interface CreateVentaDto {
   referencia_banco?: string;
   referencia_pago?: string;
   detalles: CreateVentaDetalleDto[];
-  confirmar?: boolean; // true = CONFIRMADA, false/omitido = PENDIENTE
+  confirmar?: boolean; // true = FACTURADA (stock ya descontado al crear), false/omitido = POR FACTURAR
 }
