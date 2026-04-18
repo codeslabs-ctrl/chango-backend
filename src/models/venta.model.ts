@@ -14,12 +14,9 @@ export interface Venta {
   usuario_nombre?: string | null;
   fecha_venta: Date;
   total_venta: number;
-  metodo_pago: string | null;
-  /** Tipo normalizado (tabla `metodo_pago` o `ventas.metodo_pago`) */
+  /** Tipo normalizado de `metodo_pago_venta` + `metodo_pago`. */
   tipo_pago?: string | null;
   referencia_banco?: string | null;
-  /** Nº referencia si el pago fue transferencia o pago móvil */
-  referencia_pago?: string | null;
   cliente_email?: string | null;
   cliente_direccion?: string | null;
   estatus: string;
@@ -27,11 +24,9 @@ export interface Venta {
 
 /** Body opcional al confirmar venta (facturación / datos de pago) */
 export interface ConfirmarVentaDto {
-  /** Código: efectivo | transaccion | pago movil */
+  /** Código: efectivo | pago movil | transferencia | cashea | divisa */
   tipo_pago?: string;
   referencia_banco?: string;
-  metodo_pago?: string;
-  referencia_pago?: string;
   cliente?: {
     nombre?: string;
     cedula_rif?: string;
@@ -69,10 +64,8 @@ export interface CreateVentaDetalleDto {
 
 export interface CreateVentaDto {
   cliente_id?: number;
-  metodo_pago?: string;
   tipo_pago?: string;
   referencia_banco?: string;
-  referencia_pago?: string;
   detalles: CreateVentaDetalleDto[];
   confirmar?: boolean; // true = FACTURADA (stock ya descontado al crear), false/omitido = POR FACTURAR
 }

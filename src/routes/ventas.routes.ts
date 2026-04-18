@@ -58,7 +58,7 @@ router.patch('/:id/eliminar', authenticateJWT, async (req: AuthRequest, res: Res
 });
 
 router.post('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
-  const { cliente_id, metodo_pago, tipo_pago, referencia_banco, referencia_pago, detalles, confirmar } =
+  const { cliente_id, tipo_pago, referencia_banco, detalles, confirmar } =
     req.body;
 
   if (cliente_id == null || cliente_id === '') {
@@ -71,7 +71,7 @@ router.post('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
       .status(400)
       .json({ success: false, message: 'La venta debe tener al menos un detalle' });
   }
-  const pagoIndicado = `${tipo_pago ?? ''} ${metodo_pago ?? ''}`.trim();
+  const pagoIndicado = `${tipo_pago ?? ''}`.trim();
   if (confirmar && !pagoIndicado) {
     return res
       .status(400)
@@ -83,10 +83,8 @@ router.post('/', authenticateJWT, async (req: AuthRequest, res: Response) => {
   const result = await ventasService.crearVenta(
     {
       cliente_id,
-      metodo_pago,
       tipo_pago,
       referencia_banco,
-      referencia_pago,
       detalles,
       confirmar: !!confirmar
     },

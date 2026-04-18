@@ -44,10 +44,11 @@ export function mapErrorForClient(err: unknown): { status: number; message: stri
   };
 }
 
+/** SQLSTATE de PostgreSQL: 5 caracteres alfanuméricos (p. ej. 23505, 42P01). */
 function isPostgresError(err: unknown): err is { code: string; constraint?: string; message?: string } {
   if (!err || typeof err !== 'object') return false;
   const code = (err as { code?: unknown }).code;
-  return typeof code === 'string' && /^\d{5}$/.test(code);
+  return typeof code === 'string' && /^[0-9A-Z]{5}$/i.test(code);
 }
 
 function mapPostgresError(err: { code: string; constraint?: string; message?: string }): {
@@ -91,6 +92,12 @@ function mapPostgresError(err: { code: string; constraint?: string; message?: st
       return {
         status: 400,
         message: 'El formato de uno de los datos no es válido.'
+      };
+    case '42P01':
+      return {
+        status: 503,
+        message:
+          'Falta una tabla en la base de datos (por ejemplo ventas_detalle_despacho). Reiniciá el servidor backend para aplicar el esquema o ejecutá scripts/migrar-ventas-despacho.sql en PostgreSQL.'
       };
     case '42703':
       return {

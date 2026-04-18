@@ -1,4 +1,4 @@
-import { query } from '../config/db';
+import { pool, query } from '../config/db';
 
 const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -189,4 +189,159 @@ export async function getTopProductos() {
 export async function getStockCritico() {
   const { rows } = await query('SELECT * FROM vista_stock_critico');
   return rows;
+}
+
+export interface CierreVentaDiaItem {
+  tipo_pago: string;
+  cantidad_ventas: number;
+  monto_total: number;
+}
+
+export interface CierreVentaDiaResumen {
+  fecha: string;
+  resumen_por_metodo: CierreVentaDiaItem[];
+  total_ventas: number;
+  total_monto: number;
+}
+
+export async function getCierreVentaDia(fecha?: string): Promise<CierreVentaDiaResumen> {
+  const f = fecha && FECHA_RE.test(fecha) ? fecha : new Date().toISOString().slice(0, 10);
+  const { rows } = await query<{
+    tipo_pago: string | null;
+    cantidad_ventas: string | number;
+    monto_total: string | number;
+  }>(
+    `SELECT COALESCE(mp.tipo_pago, 'sin metodo') AS tipo_pago,
+            COUNT(*)::int AS cantidad_ventas,
+            COALESCE(SUM(v.total_venta), 0)::numeric AS monto_total
+     FROM public.ventas v
+     LEFT JOIN public.metodo_pago_venta mv ON mv.venta_id = v.venta_id
+     LEFT JOIN public.metodo_pago mp ON mp.metodo_id = mv.metodo_id
+     WHERE v.fecha_venta::date = $1::date
+       AND v.estatus NOT IN ('ANULADA', 'ELIMINADA')
+     GROUP BY COALESCE(mp.tipo_pago, 'sin metodo')
+     ORDER BY monto_total DESC, tipo_pago ASC`,
+    [f]
+  );
+
+  const resumen_por_metodo: CierreVentaDiaItem[] = rows.map(r => ({
+    tipo_pago: r.tipo_pago || 'sin metodo',
+    cantidad_ventas: Number(r.cantidad_ventas) || 0,
+    monto_total: Number(r.monto_total) || 0
+  }));
+
+  const total_ventas = resumen_por_metodo.reduce((acc, x) => acc + x.cantidad_ventas, 0);
+  const total_monto = resumen_por_metodo.reduce((acc, x) => acc + x.monto_total, 0);
+  return { fecha: f, resumen_por_metodo, total_ventas, total_monto };
+}
+
+export interface TazaDiaResumen {
+  tasa_google: number | null;
+  taza_manual: number | null;
+  fuente_google: string;
+}
+
+const PARAM_NOMBRE_TAZA_DIA = 'taza del dia';
+
+function parseGoogleUsdVesRate(html: string): number | null {
+  const mDataLastPrice = html.match(/data-last-price="([0-9]+(?:\.[0-9]+)?)"/i);
+  if (mDataLastPrice?.[1]) {
+    const n = Number(mDataLastPrice[1]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  const mClass = html.match(/class="YMlKec fxKbKc">([0-9]+(?:\.[0-9]+)?)/i);
+  if (mClass?.[1]) {
+    const n = Number(mClass[1]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+async function fetchGoogleUsdVesRate(): Promise<number | null> {
+  try {
+    const res = await fetch('https://www.google.com/finance/quote/USD-VES', {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+        Accept: 'text/html'
+      }
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    return parseGoogleUsdVesRate(html);
+  } catch {
+    return null;
+  }
+}
+
+async function getTazaManualGuardada(): Promise<number | null> {
+  const { rows } = await query<{ valor_parametro: string | null }>(
+    `SELECT valor_parametro
+     FROM public.parametros_generales
+     WHERE LOWER(TRIM(nombre_parametro)) = LOWER(TRIM($1))
+     ORDER BY id_parametro ASC
+     LIMIT 1`,
+    [PARAM_NOMBRE_TAZA_DIA]
+  );
+  const v = rows[0]?.valor_parametro;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export async function getTazaDia(): Promise<TazaDiaResumen> {
+  const [tasa_google, taza_manual] = await Promise.all([
+    fetchGoogleUsdVesRate(),
+    getTazaManualGuardada()
+  ]);
+  return {
+    tasa_google,
+    taza_manual,
+    fuente_google: 'https://www.google.com/finance/quote/USD-VES'
+  };
+}
+
+export async function saveTazaDiaManual(valor: number): Promise<number> {
+  const taza = Number(valor);
+  if (!Number.isFinite(taza) || taza <= 0) {
+    throw new Error('Valor de taza del día inválido.');
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query<{ id_parametro: number }>(
+      `SELECT id_parametro
+       FROM public.parametros_generales
+       WHERE LOWER(TRIM(nombre_parametro)) = LOWER(TRIM($1))
+       ORDER BY id_parametro ASC
+       LIMIT 1
+       FOR UPDATE`,
+      [PARAM_NOMBRE_TAZA_DIA]
+    );
+    if (existing.rows[0]?.id_parametro) {
+      await client.query(
+        `UPDATE public.parametros_generales
+         SET valor_parametro = $2
+         WHERE id_parametro = $1`,
+        [existing.rows[0].id_parametro, String(taza)]
+      );
+    } else {
+      await client.query('LOCK TABLE public.parametros_generales IN SHARE ROW EXCLUSIVE MODE');
+      const next = await client.query<{ next_id: number }>(
+        `SELECT COALESCE(MAX(id_parametro), 0) + 1 AS next_id
+         FROM public.parametros_generales`
+      );
+      await client.query(
+        `INSERT INTO public.parametros_generales (id_parametro, nombre_parametro, valor_parametro)
+         VALUES ($1, $2, $3)`,
+        [next.rows[0].next_id, PARAM_NOMBRE_TAZA_DIA, String(taza)]
+      );
+    }
+    await client.query('COMMIT');
+    return taza;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }

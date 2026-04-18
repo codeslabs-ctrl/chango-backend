@@ -2,10 +2,75 @@ import { pool, query } from '../config/db';
 import type {
   Producto,
   CreateProductoDto,
-  UpdateProductoDto
+  UpdateProductoDto,
+  ProductoPrecioMetodo
 } from '../models/producto.model';
 import { AppError, NotFoundError } from '../utils/errors';
 import * as productoImagenService from './producto-imagen.service';
+import { normalizarTipoPago } from '../utils/metodosPago';
+
+type DbClient = Pick<typeof pool, 'query'>;
+
+export interface MetodoPagoCatalogoItem {
+  metodo_id: number;
+  tipo_pago: string;
+}
+
+function defaultPrecioMetodos(
+  basePrice: number,
+  metodos: MetodoPagoCatalogoItem[]
+): { metodo_id: number; precio: number }[] {
+  const byTipo = new Map(metodos.map(m => [normalizarTipoPago(m.tipo_pago), m.metodo_id]));
+  const efectivoId = byTipo.get('efectivo');
+  const pagoMovilId = byTipo.get('pago movil');
+  const transferenciaId = byTipo.get('transferencia');
+  const precioEfectivo = Math.max(0, Number(basePrice) || 0);
+  const rows: { metodo_id: number; precio: number }[] = [];
+  for (const m of metodos) {
+    const tipo = normalizarTipoPago(m.tipo_pago);
+    const precio =
+      tipo === 'efectivo' || tipo === 'pago movil' || tipo === 'transferencia'
+        ? precioEfectivo
+        : 0;
+    rows.push({ metodo_id: m.metodo_id, precio });
+  }
+  if (!efectivoId && pagoMovilId && transferenciaId) {
+    // No-op de seguridad para no romper si faltan métodos esperados.
+  }
+  return rows;
+}
+
+async function upsertPrecioMetodoRows(
+  client: DbClient,
+  productoId: number,
+  rows: { metodo_id: number; precio: number }[]
+): Promise<void> {
+  for (const r of rows) {
+    await client.query(
+      `INSERT INTO public.metodo_pago_producto (metodo_id, producto_id, precio)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (metodo_id, producto_id)
+       DO UPDATE SET precio = EXCLUDED.precio`,
+      [r.metodo_id, productoId, Math.max(0, Number(r.precio) || 0)]
+    );
+  }
+}
+
+async function syncPrecioSugeridoConEfectivo(client: DbClient, productoId: number): Promise<void> {
+  await client.query(
+    `UPDATE public.productos p
+     SET precio_venta_sugerido = COALESCE((
+       SELECT mpp.precio
+       FROM public.metodo_pago_producto mpp
+       JOIN public.metodo_pago mp ON mp.metodo_id = mpp.metodo_id
+       WHERE mpp.producto_id = p.producto_id
+         AND LOWER(TRIM(mp.tipo_pago)) = 'efectivo'
+       LIMIT 1
+     ), p.precio_venta_sugerido)
+     WHERE p.producto_id = $1`,
+    [productoId]
+  );
+}
 
 /** Vacío / ausente → 10; se permite 0 explícito. */
 export function stockMinimoFromDto(a: Pick<{ stock_minimo?: number | null }, 'stock_minimo'>): number {
@@ -36,6 +101,30 @@ export interface ProductosFilters {
   subcategoriaId?: number;
   proveedorId?: number;
   almacenId?: number;
+}
+
+export async function getMetodosPagoCatalogo(): Promise<MetodoPagoCatalogoItem[]> {
+  const { rows } = await query<MetodoPagoCatalogoItem>(
+    `SELECT metodo_id, tipo_pago
+     FROM public.metodo_pago
+     ORDER BY metodo_id ASC`
+  );
+  return rows;
+}
+
+export async function getProductoPreciosPorMetodo(productoId: number): Promise<ProductoPrecioMetodo[]> {
+  const { rows } = await query<ProductoPrecioMetodo>(
+    `SELECT mp.metodo_id,
+            mp.tipo_pago,
+            COALESCE(mpp.precio, 0)::numeric as precio
+     FROM public.metodo_pago mp
+     LEFT JOIN public.metodo_pago_producto mpp
+       ON mpp.metodo_id = mp.metodo_id
+      AND mpp.producto_id = $1
+     ORDER BY mp.metodo_id`,
+    [productoId]
+  );
+  return rows;
 }
 
 export async function findAllProductos(filters?: ProductosFilters): Promise<Producto[]> {
@@ -80,14 +169,30 @@ export async function findAllProductos(filters?: ProductosFilters): Promise<Prod
             p.fecha_ultimo_inventario,
             COALESCE(p.estatus, 'A') as estatus,
             EXISTS(SELECT 1 FROM public.ventas_detalle vd WHERE vd.producto_id = p.producto_id) as tiene_ventas,
-            p.imagen_url
+            p.imagen_url,
+            (
+              SELECT COALESCE(
+                json_agg(
+                  json_build_object(
+                    'metodo_id', mp.metodo_id,
+                    'tipo_pago', mp.tipo_pago,
+                    'precio', COALESCE(mpp.precio, 0)
+                  )
+                  ORDER BY mp.metodo_id
+                ),
+                '[]'::json
+              )
+              FROM public.metodo_pago mp
+              LEFT JOIN public.metodo_pago_producto mpp
+                ON mpp.metodo_id = mp.metodo_id
+               AND mpp.producto_id = p.producto_id
+            ) as precios_metodo
      FROM public.productos p
      LEFT JOIN public.subcategorias s ON s.subcategoria_id = p.subcategoria_id
      LEFT JOIN public.proveedores pr ON pr.proveedor_id = p.proveedor_id
      ${joinAlmacen}
      ${where}
-     ORDER BY COALESCE(${almacenId ? 'pa.stock_actual' : 'p.existencia_actual'}, 0) ASC,
-              p.producto_id ASC`,
+     ORDER BY p.producto_id DESC`,
     params
   );
   return rows;
@@ -109,7 +214,24 @@ export async function findProductoById(id: number): Promise<Producto | null> {
             p.costo,
             p.fecha_ultimo_inventario,
             COALESCE(p.estatus, 'A') as estatus,
-            p.imagen_url
+            p.imagen_url,
+            (
+              SELECT COALESCE(
+                json_agg(
+                  json_build_object(
+                    'metodo_id', mp.metodo_id,
+                    'tipo_pago', mp.tipo_pago,
+                    'precio', COALESCE(mpp.precio, 0)
+                  )
+                  ORDER BY mp.metodo_id
+                ),
+                '[]'::json
+              )
+              FROM public.metodo_pago mp
+              LEFT JOIN public.metodo_pago_producto mpp
+                ON mpp.metodo_id = mp.metodo_id
+               AND mpp.producto_id = p.producto_id
+            ) as precios_metodo
      FROM public.productos p
      LEFT JOIN public.subcategorias s ON s.subcategoria_id = p.subcategoria_id
      LEFT JOIN public.proveedores pr ON pr.proveedor_id = p.proveedor_id
@@ -212,6 +334,12 @@ export async function createProducto(dto: CreateProductoDto): Promise<Producto> 
       ]
     );
     const producto = insertRes.rows[0];
+    const metodos = await getMetodosPagoCatalogo();
+    const preciosMetodos = Array.isArray(dto.precios_metodo) && dto.precios_metodo.length > 0
+      ? dto.precios_metodo
+      : defaultPrecioMetodos(dto.precio_venta_sugerido ?? 0, metodos);
+    await upsertPrecioMetodoRows(client, producto.producto_id, preciosMetodos);
+    await syncPrecioSugeridoConEfectivo(client, producto.producto_id);
     const almacenes = dto.almacenes || [];
     await validarAlmacenesActivos(almacenes.map(a => a.almacen_id));
     let existenciaTotal = 0;
@@ -277,6 +405,23 @@ export async function updateProducto(id: number, dto: UpdateProductoDto): Promis
       ]
     );
     if (!updateRes.rows[0]) throw new NotFoundError('Producto');
+    if (Array.isArray(dto.precios_metodo)) {
+      await upsertPrecioMetodoRows(client, id, dto.precios_metodo);
+      await syncPrecioSugeridoConEfectivo(client, id);
+    } else if (dto.precio_venta_sugerido !== undefined) {
+      const metodos = await getMetodosPagoCatalogo();
+      const byTipo = new Map(metodos.map(m => [normalizarTipoPago(m.tipo_pago), m.metodo_id]));
+      const precio = Math.max(0, Number(dto.precio_venta_sugerido) || 0);
+      const filas: { metodo_id: number; precio: number }[] = [];
+      const efectivo = byTipo.get('efectivo');
+      const pagoMovil = byTipo.get('pago movil');
+      const transferencia = byTipo.get('transferencia');
+      if (efectivo) filas.push({ metodo_id: efectivo, precio });
+      if (pagoMovil) filas.push({ metodo_id: pagoMovil, precio });
+      if (transferencia) filas.push({ metodo_id: transferencia, precio });
+      await upsertPrecioMetodoRows(client, id, filas);
+      await syncPrecioSugeridoConEfectivo(client, id);
+    }
     if (dto.almacenes !== undefined && Array.isArray(dto.almacenes)) {
       await validarAlmacenesActivos(dto.almacenes.map(a => a.almacen_id));
       const currentRes = await client.query<{ almacen_id: number }>(
@@ -364,10 +509,22 @@ export async function addStockProducto(
     await client.query('BEGIN');
 
     if (dto.precio_venta_sugerido !== undefined) {
+      const nuevoPrecio = Math.max(0, Number(dto.precio_venta_sugerido) || 0);
       await client.query(
         `UPDATE public.productos SET precio_venta_sugerido = $1 WHERE producto_id = $2`,
-        [dto.precio_venta_sugerido, productoId]
+        [nuevoPrecio, productoId]
       );
+      const metodos = await getMetodosPagoCatalogo();
+      const byTipo = new Map(metodos.map(m => [normalizarTipoPago(m.tipo_pago), m.metodo_id]));
+      const filas: { metodo_id: number; precio: number }[] = [];
+      const efectivo = byTipo.get('efectivo');
+      const pagoMovil = byTipo.get('pago movil');
+      const transferencia = byTipo.get('transferencia');
+      if (efectivo) filas.push({ metodo_id: efectivo, precio: nuevoPrecio });
+      if (pagoMovil) filas.push({ metodo_id: pagoMovil, precio: nuevoPrecio });
+      if (transferencia) filas.push({ metodo_id: transferencia, precio: nuevoPrecio });
+      await upsertPrecioMetodoRows(client, productoId, filas);
+      await syncPrecioSugeridoConEfectivo(client, productoId);
     }
 
     for (const item of dto.almacenes || []) {
@@ -453,4 +610,22 @@ export async function deleteProducto(id: number): Promise<void> {
   );
   if (!rows[0]) throw new NotFoundError('Producto');
   await productoImagenService.removeProductoImageFile(oldUrl ?? null);
+}
+
+export async function getPrecioProductoPorTipoPago(
+  productoId: number,
+  tipoPago: string
+): Promise<number | null> {
+  const n = normalizarTipoPago(tipoPago);
+  const { rows } = await query<{ precio: number }>(
+    `SELECT mpp.precio
+     FROM public.metodo_pago_producto mpp
+     JOIN public.metodo_pago mp ON mp.metodo_id = mpp.metodo_id
+     WHERE mpp.producto_id = $1
+       AND LOWER(TRIM(mp.tipo_pago)) = LOWER(TRIM($2))
+     LIMIT 1`,
+    [productoId, n]
+  );
+  if (!rows[0]) return null;
+  return Number(rows[0].precio) || 0;
 }

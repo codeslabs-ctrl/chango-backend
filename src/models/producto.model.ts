@@ -17,6 +17,13 @@ export interface Producto {
   tiene_ventas?: boolean;
   /** Ruta pública servida bajo `/uploads/productos/...` o URL absoluta legada */
   imagen_url?: string | null;
+  precios_metodo?: ProductoPrecioMetodo[];
+}
+
+export interface ProductoPrecioMetodo {
+  metodo_id: number;
+  tipo_pago: string;
+  precio: number;
 }
 
 export interface ProductoAlmacenDto {
@@ -36,6 +43,7 @@ export interface CreateProductoDto {
   precio_venta_sugerido?: number;
   costo?: number;
   almacenes?: ProductoAlmacenDto[];
+  precios_metodo?: { metodo_id: number; precio: number }[];
   estatus?: 'A' | 'C';
 }
 

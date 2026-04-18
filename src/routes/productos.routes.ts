@@ -57,6 +57,27 @@ function parseAlmacenes(raw: unknown): {
   return result;
 }
 
+function parsePreciosMetodo(raw: unknown): { metodo_id: number; precio: number }[] {
+  if (!Array.isArray(raw)) return [];
+  const result: { metodo_id: number; precio: number }[] = [];
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue;
+    const metodoIdRaw = (x as { metodo_id?: unknown }).metodo_id;
+    const precioRaw = (x as { precio?: unknown }).precio;
+    const metodo_id = Number(metodoIdRaw);
+    const precio = Number(precioRaw);
+    if (!Number.isFinite(metodo_id) || metodo_id < 1) continue;
+    if (!Number.isFinite(precio) || precio < 0) continue;
+    result.push({ metodo_id, precio });
+  }
+  return result;
+}
+
+router.get('/metodos-pago', async (_req, res) => {
+  const data = await productosService.getMetodosPagoCatalogo();
+  res.json({ success: true, data });
+});
+
 router.get('/', async (req, res) => {
   const filters = {
     subcategoriaId: req.query.subcategoriaId
@@ -77,6 +98,12 @@ router.get('/:id', async (req, res) => {
   }
   const almacenes = await productosService.getProductoAlmacenes(id);
   res.json({ success: true, data: { ...producto, almacenes } });
+});
+
+router.get('/:id/precios-metodo', async (req, res) => {
+  const id = Number(req.params.id);
+  const data = await productosService.getProductoPreciosPorMetodo(id);
+  res.json({ success: true, data });
 });
 
 router.post('/:id/imagen-desde-url', authenticateJWT, requireNotVendedor, async (req, res) => {
@@ -133,6 +160,7 @@ router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
     precio_venta_sugerido,
     costo,
     almacenes,
+    precios_metodo,
     estatus
   } = req.body;
 
@@ -152,6 +180,7 @@ router.post('/', authenticateJWT, requireNotVendedor, async (req, res) => {
     precio_venta_sugerido,
     costo: costo !== undefined && costo !== null ? Number(costo) : undefined,
     almacenes: parseAlmacenes(almacenes),
+    precios_metodo: parsePreciosMetodo(precios_metodo),
     estatus: estatus === 'C' ? 'C' : 'A'
   });
   res.status(201).json({ success: true, data: producto });
@@ -169,6 +198,7 @@ router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
     precio_venta_sugerido,
     costo,
     almacenes,
+    precios_metodo,
     estatus
   } = req.body;
 
@@ -183,6 +213,7 @@ router.put('/:id', authenticateJWT, requireNotVendedor, async (req, res) => {
     precio_venta_sugerido,
     costo: costo !== undefined && costo !== null ? Number(costo) : undefined,
     almacenes: parsedAlmacenes,
+    precios_metodo: Array.isArray(precios_metodo) ? parsePreciosMetodo(precios_metodo) : undefined,
     estatus: estatus === 'C' ? 'C' : estatus === 'A' ? 'A' : undefined
   });
   res.json({ success: true, data: producto });

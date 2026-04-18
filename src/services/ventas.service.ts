@@ -16,6 +16,45 @@ import {
   esTipoPagoValidoParaScroll
 } from '../utils/metodosPago';
 
+/** Texto seguro para parámetros SQL (evita 22P02 por tipos raros en JSON o columnas mal tipadas). */
+function sqlText(v: unknown): string {
+  if (v == null) return '';
+  return String(v).trim();
+}
+
+/** Entero > 0 para PKs / FKs en transacciones de venta. */
+function enteroPositivo(v: unknown, etiqueta: string): number {
+  let n: number;
+  if (typeof v === 'bigint') {
+    n = Number(v);
+  } else if (typeof v === 'number' && Number.isFinite(v)) {
+    n = Math.trunc(v);
+  } else {
+    n = parseInt(String(v).trim(), 10);
+  }
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new AppError(
+      `Hay un dato numérico inválido en la venta (${etiqueta}). Revisá líneas de producto y despacho por almacén.`,
+      400
+    );
+  }
+  return n;
+}
+
+/** Cantidades / stock: entero ≥ 0. */
+function enteroNoNegativo(v: unknown): number {
+  let n: number;
+  if (typeof v === 'bigint') {
+    n = Number(v);
+  } else if (typeof v === 'number' && Number.isFinite(v)) {
+    n = Math.trunc(v);
+  } else {
+    n = parseInt(String(v).trim(), 10);
+  }
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
 /** Solo ventas con este usuario asignado (vendedor); exige coincidencia exacta, sin acceso a ventas sin asignar. */
 export function vendedorPuedeAccederVenta(venta: Venta, userId: number): boolean {
   return venta.usuario_id != null && venta.usuario_id === userId;
@@ -28,23 +67,18 @@ export async function crearVenta(
 ): Promise<{ venta: Venta; detalles: CreateVentaDetalleDto[] }> {
   const {
     cliente_id,
-    metodo_pago,
     tipo_pago,
     referencia_banco,
-    referencia_pago,
     detalles,
     confirmar = false
   } = dto;
 
-  const refLinea = (referencia_banco ?? referencia_pago ?? '').toString().trim();
-  let tipoPago = normalizarTipoPago(tipo_pago ?? metodo_pago);
+  const refLinea = (referencia_banco ?? '').toString().trim();
+  let tipoPago = normalizarTipoPago(tipo_pago);
 
   if (confirmar) {
     if (!esTipoPagoValidoParaScroll(tipoPago)) {
-      throw new AppError(
-        'Elegí un método de pago válido (efectivo, transferencia o pago móvil).',
-        400
-      );
+      throw new AppError('Elegí un método de pago válido.', 400);
     }
     if (requiereReferenciaTipoPago(tipoPago) && !refLinea) {
       throw new AppError(
@@ -54,10 +88,7 @@ export async function crearVenta(
     }
   } else if (usuarioIdVendedor != null) {
     if (!esTipoPagoValidoParaScroll(tipoPago)) {
-      throw new AppError(
-        'Elegí un método de pago (efectivo, transferencia o pago móvil).',
-        400
-      );
+      throw new AppError('Elegí un método de pago válido.', 400);
     }
   } else {
     if (!esTipoPagoValidoParaScroll(tipoPago)) {
@@ -95,10 +126,15 @@ export async function crearVenta(
         400
       );
     }
-    const precio = Number(producto.precio_venta_sugerido) || 0;
+    const precioMetodo = await productosService.getPrecioProductoPorTipoPago(
+      d.producto_id,
+      tipoPago
+    );
+    const precio = Number(precioMetodo ?? producto.precio_venta_sugerido) || 0;
     if (precio <= 0) {
       throw new AppError(`El producto ${producto.descripcion} no tiene precio de venta configurado`, 400);
     }
+    d.precio_unitario = precio;
 
     const almacenes = await productosService.getProductoAlmacenes(d.producto_id);
 
@@ -125,6 +161,8 @@ export async function crearVenta(
   } else {
     estatus = 'POR FACTURAR';
   }
+  const esVentaVendedor = uid != null;
+  const debeDescontarStockEnAlta = confirmar || esVentaVendedor;
 
   const client = await pool.connect();
   try {
@@ -136,18 +174,28 @@ export async function crearVenta(
     );
 
     const ventaRes = await client.query<Venta>(
-      `INSERT INTO public.ventas (cliente_id, total_venta, metodo_pago, estatus, usuario_id)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING venta_id, cliente_id, usuario_id, fecha_venta, total_venta, metodo_pago, estatus`,
-      [cliente_id ?? null, totalVenta, tipoPago, estatus, uid]
+      `INSERT INTO public.ventas (cliente_id, total_venta, estatus, usuario_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING venta_id, cliente_id, usuario_id, fecha_venta, total_venta, estatus`,
+      [cliente_id ?? null, totalVenta, estatus, uid]
     );
 
     const venta = ventaRes.rows[0];
 
+    const metodoPagoRes = await client.query<{ metodo_id: number }>(
+      `SELECT metodo_id FROM public.metodo_pago
+       WHERE LOWER(TRIM(tipo_pago)) = LOWER(TRIM($1))
+       LIMIT 1`,
+      [tipoPago]
+    );
+    const metodoId = metodoPagoRes.rows[0]?.metodo_id;
+    if (!metodoId) {
+      throw new AppError(`No existe el método de pago «${tipoPago}».`, 400);
+    }
     await client.query(
-      `INSERT INTO public.metodo_pago (venta_id, tipo_pago, referencia_banco)
+      `INSERT INTO public.metodo_pago_venta (metodo_id, venta_id, referencia)
        VALUES ($1, $2, $3)`,
-      [venta.venta_id, tipoPago, refLinea || null]
+      [metodoId, venta.venta_id, refLinea || null]
     );
 
     for (const d of detalles) {
@@ -167,7 +215,7 @@ export async function crearVenta(
         );
       }
 
-      if (confirmar) {
+      if (debeDescontarStockEnAlta) {
         for (const desp of d.despachos) {
           if ((desp.cantidad || 0) <= 0) continue;
           await client.query(
@@ -210,21 +258,20 @@ export async function findVentaById(id: number): Promise<VentaConDetalles | null
             u.nombre_usuario as usuario_nombre,
             v.fecha_venta,
             v.total_venta,
-            v.metodo_pago,
-            v.referencia_pago,
-            v.estatus,
-            COALESCE(mp.tipo_pago, v.metodo_pago) AS tipo_pago,
-            COALESCE(mp.referencia_banco, v.referencia_pago) AS referencia_banco
+            CASE WHEN v.estatus = 'ELIMINADA' THEN 'ANULADA' ELSE v.estatus END as estatus,
+            mpv.tipo_pago AS tipo_pago,
+            mpv.referencia AS referencia_banco
      FROM public.ventas v
      LEFT JOIN public.clientes c ON c.cliente_id = v.cliente_id
      LEFT JOIN public.usuarios u ON u.id = v.usuario_id
      LEFT JOIN LATERAL (
-       SELECT mp.tipo_pago, mp.referencia_banco
-       FROM public.metodo_pago mp
-       WHERE mp.venta_id = v.venta_id
-       ORDER BY mp.metodo_id DESC
+       SELECT mp.tipo_pago, mv.referencia
+       FROM public.metodo_pago_venta mv
+       JOIN public.metodo_pago mp ON mp.metodo_id = mv.metodo_id
+       WHERE mv.venta_id = v.venta_id
+       ORDER BY mv.metodo_id DESC
        LIMIT 1
-     ) mp ON true
+     ) mpv ON true
      WHERE v.venta_id = $1`,
     [id]
   );
@@ -329,7 +376,7 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
   const pt = filters?.pendientesTipo;
   if (pt === 'vendedor' || pt === 'agente') {
     conditions.push(`(v.estatus IN ('POR FACTURAR', 'PENDIENTE'))`);
-    conditions.push(`v.estatus NOT IN ('FACTURADA', 'ELIMINADA')`);
+    conditions.push(`v.estatus NOT IN ('FACTURADA', 'ANULADA', 'ELIMINADA')`);
     if (pt === 'vendedor') {
       conditions.push(`v.usuario_id IS NOT NULL`);
     } else {
@@ -363,7 +410,7 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
       `c.nombre ILIKE $${likeIdx}`,
       `COALESCE(c.telefono, '') ILIKE $${likeIdx}`,
       `COALESCE(c.cedula_rif, '') ILIKE $${likeIdx}`,
-      `COALESCE(v.metodo_pago, '') ILIKE $${likeIdx}`,
+      `COALESCE(mpv.tipo_pago, '') ILIKE $${likeIdx}`,
       `EXISTS (
          SELECT 1 FROM public.ventas_detalle vd
          JOIN public.productos p ON p.producto_id = vd.producto_id
@@ -391,7 +438,7 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
              FROM public.ventas_detalle vd
              JOIN public.productos p ON p.producto_id = vd.producto_id
              WHERE vd.venta_id = v.venta_id) as productos_nombres,
-            (SELECT COUNT(*)::int FROM public.ventas_detalle vd WHERE vd.venta_id = v.venta_id) as cantidad_productos,
+            (SELECT COALESCE(SUM(vd.cantidad), 0)::int FROM public.ventas_detalle vd WHERE vd.venta_id = v.venta_id) as cantidad_productos,
             (SELECT COALESCE(
                (SELECT json_agg(
                   json_build_object(
@@ -419,11 +466,19 @@ export async function findAllVentas(filters?: VentasFilters): Promise<Venta[]> {
             u.nombre_usuario as usuario_nombre,
             v.fecha_venta,
             v.total_venta,
-            v.metodo_pago,
-            v.estatus
+            mpv.tipo_pago as tipo_pago,
+            CASE WHEN v.estatus = 'ELIMINADA' THEN 'ANULADA' ELSE v.estatus END as estatus
      FROM public.ventas v
      LEFT JOIN public.clientes c ON c.cliente_id = v.cliente_id
      LEFT JOIN public.usuarios u ON u.id = v.usuario_id
+     LEFT JOIN LATERAL (
+       SELECT mp.tipo_pago
+       FROM public.metodo_pago_venta mv
+       JOIN public.metodo_pago mp ON mp.metodo_id = mv.metodo_id
+       WHERE mv.venta_id = v.venta_id
+       ORDER BY mv.metodo_id DESC
+       LIMIT 1
+     ) mpv ON true
      ${where}
      ORDER BY v.fecha_venta DESC`,
     params
@@ -446,18 +501,10 @@ export async function confirmarVenta(
     data?.venta.estatus === 'PENDIENTE' || data?.venta.estatus === 'POR FACTURAR';
   if (!data || !estatusValido) return null;
 
-  const tipoActual = normalizarTipoPago(
-    data.venta.tipo_pago ?? data.venta.metodo_pago ?? ''
-  );
-  const refExistente = (
-    data.venta.referencia_banco ??
-    data.venta.referencia_pago ??
-    ''
-  )
-    .toString()
-    .trim();
+  const tipoActual = normalizarTipoPago(data.venta.tipo_pago ?? '');
+  const refExistente = (data.venta.referencia_banco ?? '').toString().trim();
 
-  const refDto = (dto?.referencia_banco ?? dto?.referencia_pago ?? '').toString().trim();
+  const refDto = (dto?.referencia_banco ?? '').toString().trim();
 
   let tipoFinal: string;
   let refFinal: string;
@@ -465,12 +512,9 @@ export async function confirmarVenta(
   const ventaSinVendedor = data.venta.usuario_id == null;
 
   if (ventaSinVendedor) {
-    const tipoDto = normalizarTipoPago(dto?.tipo_pago ?? dto?.metodo_pago ?? '');
+    const tipoDto = normalizarTipoPago(dto?.tipo_pago ?? '');
     if (!esTipoPagoValidoParaScroll(tipoDto)) {
-      throw new AppError(
-        'Elegí un método de pago (efectivo, transferencia o pago móvil).',
-        400
-      );
+      throw new AppError('Elegí un método de pago válido.', 400);
     }
     tipoFinal = tipoDto;
     refFinal = refDto || refExistente;
@@ -517,7 +561,8 @@ export async function confirmarVenta(
 
     if (clienteUpdate && data.venta.cliente_id) {
       const x = clienteUpdate;
-      const nombre = (x.nombre ?? '').trim();
+      const nombre = sqlText(x.nombre);
+      const clienteId = enteroPositivo(data.venta.cliente_id, 'cliente');
       await client.query(
         `UPDATE public.clientes SET
            nombre = $1,
@@ -528,75 +573,124 @@ export async function confirmarVenta(
          WHERE cliente_id = $6`,
         [
           nombre,
-          x.cedula_rif ?? '',
-          x.telefono ?? '',
-          x.email ?? '',
-          x.direccion ?? '',
-          data.venta.cliente_id
+          sqlText(x.cedula_rif),
+          sqlText(x.telefono),
+          sqlText(x.email),
+          sqlText(x.direccion),
+          clienteId
         ]
       );
     }
 
-    await client.query(
-      `UPDATE public.ventas
-       SET metodo_pago = $1,
-           referencia_pago = $2
-       WHERE venta_id = $3`,
-      [tipoFinal, refGuardar || null, id]
+    const metodoPagoRes = await client.query<{ metodo_id: number }>(
+      `SELECT metodo_id FROM public.metodo_pago
+       WHERE LOWER(TRIM(tipo_pago)) = LOWER(TRIM($1))
+       LIMIT 1`,
+      [tipoFinal]
     );
-
-    await client.query(`DELETE FROM public.metodo_pago WHERE venta_id = $1`, [id]);
+    const metodoId = metodoPagoRes.rows[0]?.metodo_id;
+    if (!metodoId) {
+      throw new AppError(`No existe el método de pago «${tipoFinal}».`, 400);
+    }
+    await client.query(`DELETE FROM public.metodo_pago_venta WHERE venta_id = $1`, [id]);
     await client.query(
-      `INSERT INTO public.metodo_pago (venta_id, tipo_pago, referencia_banco)
+      `INSERT INTO public.metodo_pago_venta (metodo_id, venta_id, referencia)
        VALUES ($1, $2, $3)`,
-      [id, tipoFinal, refGuardar || null]
+      [metodoId, id, refGuardar || null]
     );
 
-    if (despachos.length > 0) {
-      for (const desp of despachos) {
-        await client.query(
-          `UPDATE public.producto_almacenes
-           SET stock_actual = COALESCE(stock_actual, 0) - $1
-           WHERE producto_id = $2 AND almacen_id = $3`,
-          [desp.cantidad, desp.producto_id, desp.almacen_id]
-        );
-      }
-      const cantidadesPorProducto = new Map<number, number>();
+    // Venta de agente (sin vendedor) descuenta al facturar.
+    if (ventaSinVendedor) {
+      // Recalcula precios por método de pago elegido y actualiza detalle/total.
+      let nuevoTotalVenta = 0;
       for (const d of data.detalles) {
-        cantidadesPorProducto.set(d.producto_id, d.cantidad);
-      }
-      for (const [productoId, cantidad] of cantidadesPorProducto) {
-        await client.query(
-          `UPDATE public.productos
-           SET existencia_actual = COALESCE(existencia_actual, 0) - $1
-           WHERE producto_id = $2`,
-          [cantidad, productoId]
-        );
-      }
-    } else {
-      for (const d of data.detalles) {
-        const almacenes = await productosService.getProductoAlmacenes(d.producto_id);
-        let remaining = Number(d.cantidad) || 0;
-        for (const a of almacenes) {
-          if (remaining <= 0) break;
-          const stock = a.stock_actual ?? 0;
-          const toReduce = Math.min(remaining, stock);
-          if (toReduce > 0) {
-            await client.query(
-              `UPDATE public.producto_almacenes
-               SET stock_actual = COALESCE(stock_actual, 0) - $1
-               WHERE producto_id = $2 AND almacen_id = $3`,
-              [toReduce, d.producto_id, a.almacen_id]
-            );
-            remaining -= toReduce;
-          }
+        const prodId = enteroPositivo(d.producto_id, 'producto');
+        const producto = await productosService.findProductoById(prodId);
+        if (!producto) {
+          throw new AppError(`No encontramos el producto con ID ${prodId}.`, 404);
         }
+        const precioMetodo = await productosService.getPrecioProductoPorTipoPago(prodId, tipoFinal);
+        const rawPrecio = Number(precioMetodo ?? producto.precio_venta_sugerido);
+        const precioUnitario = Number.isFinite(rawPrecio) ? rawPrecio : 0;
+        if (precioUnitario <= 0) {
+          throw new AppError(
+            `El producto ${producto.descripcion} no tiene precio válido para el método de pago seleccionado.`,
+            400
+          );
+        }
+        const detalleId = enteroPositivo(d.detalle_id, 'detalle');
+        const cantLinea = enteroNoNegativo(d.cantidad);
         await client.query(
-          `UPDATE public.productos
-           SET existencia_actual = COALESCE(existencia_actual, 0) - $1
-           WHERE producto_id = $2`,
-          [d.cantidad, d.producto_id]
+          `UPDATE public.ventas_detalle
+           SET precio_unitario = $1
+           WHERE detalle_id = $2`,
+          [precioUnitario, detalleId]
         );
+        nuevoTotalVenta += cantLinea * precioUnitario;
+      }
+      if (!Number.isFinite(nuevoTotalVenta) || nuevoTotalVenta < 0) {
+        throw new AppError('El total de la venta no pudo calcularse. Revisá precios y cantidades.', 400);
+      }
+      await client.query(
+        `UPDATE public.ventas
+         SET total_venta = $1
+         WHERE venta_id = $2`,
+        [nuevoTotalVenta, id]
+      );
+
+      if (despachos.length > 0) {
+        for (const desp of despachos) {
+          const pid = enteroPositivo(desp.producto_id, 'producto (despacho)');
+          const aid = enteroPositivo(desp.almacen_id, 'almacén (despacho)');
+          const cDesp = enteroNoNegativo(desp.cantidad);
+          await client.query(
+            `UPDATE public.producto_almacenes
+             SET stock_actual = COALESCE(stock_actual, 0) - $1
+             WHERE producto_id = $2 AND almacen_id = $3`,
+            [cDesp, pid, aid]
+          );
+        }
+        const cantidadesPorProducto = new Map<number, number>();
+        for (const d of data.detalles) {
+          const pid = enteroPositivo(d.producto_id, 'producto');
+          const prev = cantidadesPorProducto.get(pid) ?? 0;
+          cantidadesPorProducto.set(pid, prev + enteroNoNegativo(d.cantidad));
+        }
+        for (const [productoId, cantidad] of cantidadesPorProducto) {
+          await client.query(
+            `UPDATE public.productos
+             SET existencia_actual = COALESCE(existencia_actual, 0) - $1
+             WHERE producto_id = $2`,
+            [cantidad, productoId]
+          );
+        }
+      } else {
+        for (const d of data.detalles) {
+          const pid = enteroPositivo(d.producto_id, 'producto');
+          const almacenes = await productosService.getProductoAlmacenes(pid);
+          let remaining = enteroNoNegativo(d.cantidad);
+          for (const a of almacenes) {
+            if (remaining <= 0) break;
+            const stock = enteroNoNegativo(a.stock_actual);
+            const toReduce = Math.min(remaining, stock);
+            if (toReduce > 0) {
+              const almId = enteroPositivo(a.almacen_id, 'almacén');
+              await client.query(
+                `UPDATE public.producto_almacenes
+                 SET stock_actual = COALESCE(stock_actual, 0) - $1
+                 WHERE producto_id = $2 AND almacen_id = $3`,
+                [toReduce, pid, almId]
+              );
+              remaining -= toReduce;
+            }
+          }
+          await client.query(
+            `UPDATE public.productos
+             SET existencia_actual = COALESCE(existencia_actual, 0) - $1
+             WHERE producto_id = $2`,
+            [enteroNoNegativo(d.cantidad), pid]
+          );
+        }
       }
     }
 
@@ -619,11 +713,63 @@ export async function confirmarVenta(
 export async function eliminarVenta(id: number): Promise<VentaConDetalles | null> {
   const data = await findVentaById(id);
   if (!data) return null;
+  const ventaEsVendedor = data.venta.usuario_id != null;
+  const estatus = (data.venta.estatus || '').trim().toUpperCase();
+  const esPendiente =
+    estatus === 'PENDIENTE' || estatus === 'POR FACTURAR' || estatus === 'POR CONFIRMAR';
+  const debeReponerStock = ventaEsVendedor && esPendiente;
 
-  await query(
-    `UPDATE public.ventas SET estatus = 'ELIMINADA' WHERE venta_id = $1`,
-    [id]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  return findVentaById(id);
+    if (debeReponerStock) {
+      const { rows: despachos } = await client.query<{
+        producto_id: number;
+        almacen_id: number;
+        cantidad: number;
+      }>(
+        `SELECT producto_id, almacen_id, cantidad
+         FROM public.ventas_detalle_despacho
+         WHERE venta_id = $1`,
+        [id]
+      );
+
+      for (const desp of despachos) {
+        await client.query(
+          `UPDATE public.producto_almacenes
+           SET stock_actual = COALESCE(stock_actual, 0) + $1
+           WHERE producto_id = $2 AND almacen_id = $3`,
+          [desp.cantidad, desp.producto_id, desp.almacen_id]
+        );
+      }
+
+      const cantidadesPorProducto = new Map<number, number>();
+      for (const d of data.detalles) {
+        const acumulado = cantidadesPorProducto.get(d.producto_id) || 0;
+        cantidadesPorProducto.set(d.producto_id, acumulado + (Number(d.cantidad) || 0));
+      }
+      for (const [productoId, cantidad] of cantidadesPorProducto) {
+        await client.query(
+          `UPDATE public.productos
+           SET existencia_actual = COALESCE(existencia_actual, 0) + $1
+           WHERE producto_id = $2`,
+          [cantidad, productoId]
+        );
+      }
+    }
+
+    await client.query(
+      `UPDATE public.ventas SET estatus = 'ANULADA' WHERE venta_id = $1`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+    return findVentaById(id);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
